@@ -443,26 +443,34 @@ public:
     if (noteController == nullptr || info == nullptr) return;
     auto* prefab = GetAssetAs<UnityEngine::GameObject>(info->asset);
     if (prefab == nullptr || !UnityEngine::Object::op_Implicit_bool(prefab)) return;
+    UnityEngine::Transform* noteTransform = noteController->____noteTransform;
+    if (noteTransform == nullptr) return;
+    // Collect original renderers BEFORE parenting spawned object
+    // otherwise the spawned renderers get included and disabled
+    auto originalRenderers = noteController->get_gameObject()->GetComponentsInChildren<UnityEngine::Renderer*>(true);
     auto* spawned = UnityEngine::Object::Instantiate(prefab);
     CleanCustomObject(spawned);
-    UnityEngine::Transform* noteTransform = noteController->____noteTransform;
     spawned->get_transform()->SetParent(noteTransform, false);
-    auto renderers = noteController->get_gameObject()->GetComponentsInChildren<UnityEngine::Renderer*>(true);
-    for (int i = 0; i < renderers.size(); i++) {
-      auto* r = renderers[i];
+    // Disable original note renderers
+    for (int i = 0; i < originalRenderers.size(); i++) {
+      auto* r = originalRenderers[i];
       if (r->get_transform()->get_parent().ptr() == noteTransform || r->get_transform().ptr() == noteTransform) {
         r->set_enabled(false);
       }
     }
-    auto* mpb = noteController->get_gameObject()->GetComponentInChildren<GlobalNamespace::MaterialPropertyBlockController*>();
-    if (mpb != nullptr && UnityEngine::Object::op_Implicit_bool(mpb)) {
-      auto newRenderers = spawned->GetComponentsInChildren<UnityEngine::Renderer*>(true);
-      auto convertedRenderers = ArrayW<UnityW<UnityEngine::Renderer>>(newRenderers.size());
-      for (int i = 0; i < newRenderers.size(); i++) {
-        convertedRenderers[i] = newRenderers[i];
+    // Apply note color to all MPBs (not just the first) so custom notes get the right color
+    auto newRenderers = spawned->GetComponentsInChildren<UnityEngine::Renderer*>(true);
+    auto convertedRenderers = ArrayW<UnityW<UnityEngine::Renderer>>(newRenderers.size());
+    for (int i = 0; i < newRenderers.size(); i++) {
+      convertedRenderers[i] = newRenderers[i];
+    }
+    auto mpbs = noteController->get_gameObject()->GetComponentsInChildren<GlobalNamespace::MaterialPropertyBlockController*>(true);
+    for (int i = 0; i < mpbs.size(); i++) {
+      auto* mpb = mpbs[i];
+      if (mpb != nullptr && UnityEngine::Object::op_Implicit_bool(mpb)) {
+        mpb->____renderers = convertedRenderers;
+        mpb->ApplyChanges();
       }
-      mpb->____renderers = convertedRenderers;
-      mpb->ApplyChanges();
     }
   }
   void ReplaceSaberVisuals(GlobalNamespace::SaberModelController* smc, GlobalNamespace::Saber* saber, UnityEngine::Transform* parent) {
