@@ -410,7 +410,8 @@ public:
   }
   AssignedPrefabInfo* FindAssignedSaberPrefab(int type) {
     for (auto& info : _assignedPrefabs) {
-      if (info.objectType == "saber" && info.saberType.has_value() && info.saberType.value() == type) {
+      if (info.objectType != "saber") continue;
+      if (!info.saberType.has_value() || info.saberType.value() == type) {
         return &info;
       }
     }
@@ -462,7 +463,7 @@ public:
   }
   void ReplaceSaberVisuals(GlobalNamespace::SaberModelController* smc, GlobalNamespace::Saber* saber, UnityEngine::Transform* parent) {
     if (smc == nullptr || saber == nullptr || parent == nullptr) return;
-    int type = (int)saber->get_saberType();
+    int type = saber->get_saberType().value__;
     auto* info = FindAssignedSaberPrefab(type);
     if (info == nullptr) return;
     auto* prefab = GetAssetAs<UnityEngine::GameObject>(info->asset);
@@ -480,7 +481,6 @@ public:
     auto tracksModInfo = CModInfo{.id = "Tracks"};
     modloader_require_mod(&cjdModInfo, CMatchType::MatchType_IdOnly);
     modloader_require_mod(&tracksModInfo, CMatchType::MatchType_IdOnly);
-    EnsureBehaviour();
     SongCore::API::Capabilities::RegisterCapability(kCapability);
     CustomJSONData::CustomEventCallbacks::AddCustomEventCallback(&Runtime::OnCustomEventStatic);
     SongCore::API::LevelSelect::GetLevelWasSelectedEvent() += [](SongCore::API::LevelSelect::LevelWasSelectedEventArgs const& event) {
@@ -488,6 +488,7 @@ public:
     };
   }
   void Update() {
+    EnsureBehaviour();
     if (_audioTimeSyncController != nullptr && !UnityEngine::Object::op_Implicit_bool(_audioTimeSyncController)) {
       ResetRuntime();
       return;
