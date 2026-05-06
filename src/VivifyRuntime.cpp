@@ -403,7 +403,8 @@ public:
   }
   AssignedPrefabInfo* FindAssignedPrefab(std::string_view objectType, GlobalNamespace::NoteData* noteData) {
     if (noteData == nullptr) return nullptr;
-    auto* customNoteData = il2cpp_utils::cast<CustomJSONData::CustomNoteData>(noteData);
+    auto* customNoteData = il2cpp_utils::try_cast<CustomJSONData::CustomNoteData>(noteData).value_or(nullptr);
+    if (customNoteData == nullptr) return nullptr;
     auto& ad = TracksAD::getAD(customNoteData->customData);
     if (ad.tracks.empty()) return nullptr;
     for (auto& info : _assignedPrefabs) {
