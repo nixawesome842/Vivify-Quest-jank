@@ -397,6 +397,10 @@ public:
   void QueueSaberController(GlobalNamespace::SaberModelController* smc, GlobalNamespace::Saber* saber, UnityEngine::Transform* parent) {
     _pendingSaberControllers.emplace_back(smc, saber, parent);
   }
+  void PrepareBeatmapEarly(CustomJSONData::CustomBeatmapData* beatmapData) {
+    if (_currentBeatmapData == beatmapData) return; // already prepared
+    PrepareBeatmap(beatmapData);
+  }
   AssignedPrefabInfo* FindAssignedPrefab(std::string_view objectType, GlobalNamespace::NoteData* noteData) {
     if (noteData == nullptr) return nullptr;
     auto* customNoteData = il2cpp_utils::cast<CustomJSONData::CustomNoteData>(noteData);
@@ -1720,14 +1724,17 @@ private:
   bool _isResetting = false;
 };
 }
+MAKE_HOOK_MATCH(BeatmapCallbacksController_Start, &GlobalNamespace::BeatmapCallbacksController::Start, void, GlobalNamespace::BeatmapCallbacksController* self) {
+  BeatmapCallbacksController_Start(self);
+  auto* customBeatmapData = il2cpp_utils::try_cast<CustomJSONData::CustomBeatmapData>(self->_beatmapData).value_or(nullptr);
+  if (customBeatmapData != nullptr) {
+    Runtime::Instance().PrepareBeatmapEarly(customBeatmapData);
+  }
+}
 MAKE_HOOK_MATCH(SaberModelController_Init, &GlobalNamespace::SaberModelController::Init, void, GlobalNamespace::SaberModelController* self, UnityEngine::Transform* parent, GlobalNamespace::Saber* saber, UnityEngine::Color trailTintColor) {
   SaberModelController_Init(self, parent, saber, trailTintColor);
   if (Runtime::Instance().IsResetting()) return;
-  if (Runtime::Instance().HasAssignedPrefabs()) {
-    Runtime::Instance().ReplaceSaberVisuals(self, saber, parent);
-  } else {
-    Runtime::Instance().QueueSaberController(self, saber, parent);
-  }
+  Runtime::Instance().ReplaceSaberVisuals(self, saber, parent);
 }
 MAKE_HOOK_MATCH(GameNoteController_Init, &GlobalNamespace::GameNoteController::Init, void, GlobalNamespace::GameNoteController* self, GlobalNamespace::NoteData* noteData, ByRef<GlobalNamespace::NoteSpawnData> noteSpawnData, GlobalNamespace::NoteVisualModifierType noteVisualModifierType, float cutAngleTolerance, float uniformScale) {
   GameNoteController_Init(self, noteData, noteSpawnData, noteVisualModifierType, cutAngleTolerance, uniformScale);
@@ -1752,6 +1759,7 @@ MAKE_HOOK_MATCH(BurstSliderGameNoteController_Init, &GlobalNamespace::BurstSlide
 }
 void LateLoad() {
   Runtime::Instance().LateLoad();
+  INSTALL_HOOK(PaperLogger, BeatmapCallbacksController_Start);
   INSTALL_HOOK(PaperLogger, SaberModelController_Init);
   INSTALL_HOOK(PaperLogger, GameNoteController_Init);
   INSTALL_HOOK(PaperLogger, BombNoteController_Init);
