@@ -415,7 +415,7 @@ public:
   bool HasAssignedPrefabs() const { return !_assignedPrefabs.empty(); }
   void PrepareBeatmapEarly(CustomJSONData::CustomBeatmapData* beatmapData) {
     if (_currentBeatmapData == beatmapData) return;
-    PrepareBeatmap(beatmapData, static_cast<GlobalNamespace::IReadonlyBeatmapData*>(beatmapData));
+    PrepareBeatmap(beatmapData, beatmapData);
   }
   void LateLoad() {
     auto cjdModInfo = CustomJSONData::modInfo.to_c();
@@ -444,8 +444,8 @@ public:
     UpdateMaterialAnimations(songTime);
     UpdateGlobalAnimations(songTime);
     UpdateAnimatorAnimations(songTime);
-    UpdateBlitEffects(songTime);
-    UpdateRenderSettingAnimations(songTime);
+    UpdateBlitEffects();
+    UpdateRenderSettingAnimations();
     UpdateVideoPlayers(songTime);
     if (_cameraCheckFrame++ % 10 == 0) {
       auto mainCam = UnityEngine::Camera::get_main();
@@ -1819,11 +1819,11 @@ MAKE_HOOK_MATCH(BurstSliderGameNoteController_Init, &GlobalNamespace::BurstSlide
 }
 void LateLoad() {
   Runtime::Instance().LateLoad();
-  INSTALL_HOOK(logger, AudioTimeSyncController_Start);
-  INSTALL_HOOK(logger, SaberModelController_Init);
-  INSTALL_HOOK(logger, GameNoteController_Init);
-  INSTALL_HOOK(logger, BombNoteController_Init);
-  INSTALL_HOOK(logger, BurstSliderGameNoteController_Init);
+  INSTALL_HOOK(PaperLogger, AudioTimeSyncController_Start);
+  INSTALL_HOOK(PaperLogger, SaberModelController_Init);
+  INSTALL_HOOK(PaperLogger, GameNoteController_Init);
+  INSTALL_HOOK(PaperLogger, BombNoteController_Init);
+  INSTALL_HOOK(PaperLogger, BurstSliderGameNoteController_Init);
 }
 void RuntimeBehaviour::Update() {
   Runtime::Instance().Update();
