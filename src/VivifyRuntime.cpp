@@ -1724,9 +1724,11 @@ private:
   bool _isResetting = false;
 };
 }
-MAKE_HOOK_MATCH(BeatmapCallbacksController_Start, &GlobalNamespace::BeatmapCallbacksController::Start, void, GlobalNamespace::BeatmapCallbacksController* self) {
-  BeatmapCallbacksController_Start(self);
-  auto* customBeatmapData = il2cpp_utils::try_cast<CustomJSONData::CustomBeatmapData>(self->_beatmapData).value_or(nullptr);
+MAKE_HOOK_MATCH(AudioTimeSyncController_Start, &GlobalNamespace::AudioTimeSyncController::Start, void, GlobalNamespace::AudioTimeSyncController* self) {
+  AudioTimeSyncController_Start(self);
+  auto* bcc = UnityEngine::Object::FindObjectOfType<GlobalNamespace::BeatmapCallbacksController*>();
+  if (bcc == nullptr) return;
+  auto* customBeatmapData = il2cpp_utils::try_cast<CustomJSONData::CustomBeatmapData>(bcc->_beatmapData).value_or(nullptr);
   if (customBeatmapData != nullptr) {
     Runtime::Instance().PrepareBeatmapEarly(customBeatmapData);
   }
@@ -1759,7 +1761,7 @@ MAKE_HOOK_MATCH(BurstSliderGameNoteController_Init, &GlobalNamespace::BurstSlide
 }
 void LateLoad() {
   Runtime::Instance().LateLoad();
-  INSTALL_HOOK(PaperLogger, BeatmapCallbacksController_Start);
+  INSTALL_HOOK(PaperLogger, AudioTimeSyncController_Start);
   INSTALL_HOOK(PaperLogger, SaberModelController_Init);
   INSTALL_HOOK(PaperLogger, GameNoteController_Init);
   INSTALL_HOOK(PaperLogger, BombNoteController_Init);
