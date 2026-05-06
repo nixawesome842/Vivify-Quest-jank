@@ -133,6 +133,7 @@ void HandleCreateCamera(rapidjson::Value const& json) {
   if (cam.depthTexturePropertyId.has_value()) {
     cam.depthRT = UnityEngine::RenderTexture::New_ctor(w, h, 24, UnityEngine::RenderTextureFormat::Depth);
     cam.depthRT->Create();
+    cam.camera->set_targetTexture(cam.depthRT);
     UnityEngine::Shader::SetGlobalTexture(cam.depthTexturePropertyId.value(),
       static_cast<UnityEngine::Texture*>(cam.depthRT));
   }
@@ -303,11 +304,14 @@ void ParseAndApplyRenderSetting(std::string const& key, rapidjson::Value const& 
     } else {
       ApplyRenderSettingValue(key, f);
       if (!immediate) {
-        RenderSettingValue rsv;
-        rsv.name = key;
-        rsv.kind = RenderSettingKind::Float;
-        rsv.value = f;
-        out.push_back(std::move(rsv));
+        auto pd = MakePointDefinition(val.GetObject(), key, Tracks::ffi::WrapBaseValueType::Float);
+        if (pd.has_value()) {
+          RenderSettingValue rsv;
+          rsv.name = key;
+          rsv.kind = RenderSettingKind::Float;
+          rsv.value = std::move(*pd);
+          out.push_back(std::move(rsv));
+        }
       }
     }
   }
@@ -359,13 +363,15 @@ void HandleAssignObjectPrefab(CustomJSONData::CustomEventData*, rapidjson::Value
     std::string assetStr(*asset);
     auto tracks = ReadTracks(*objVal, v2);
     auto* prefab = GetAssetAs<UnityEngine::GameObject>(assetStr);
-    if (prefab == nullptr && !assetStr.empty()) {
-      continue;
-    }
+    (void)prefab; // loaded lazily at spawn time
     AssignedPrefabInfo info;
     info.asset = assetStr;
     info.tracks = std::move(tracks);
     info.objectType = std::string(objType);
+    if (objType == "saber") {
+      auto type = ReadInt(*objVal, "type");
+      if (type.has_value()) info.saberType = *type;
+    }
     _assignedPrefabs.push_back(std::move(info));
   }
 }
