@@ -1791,7 +1791,13 @@ MAKE_HOOK_MATCH(AudioTimeSyncController_Start, &GlobalNamespace::AudioTimeSyncCo
 }
 MAKE_HOOK_MATCH(SaberModelController_Init, &GlobalNamespace::SaberModelController::Init, void, GlobalNamespace::SaberModelController* self, UnityEngine::Transform* parent, GlobalNamespace::Saber* saber, UnityEngine::Color trailTintColor) {
   SaberModelController_Init(self, parent, saber, trailTintColor);
-  if (Runtime::Instance().GetCurrentBeatmapData() == nullptr || Runtime::Instance().IsResetting()) return;
+  if (Runtime::Instance().IsResetting()) return;
+  auto* bcc = UnityEngine::Object::FindObjectOfType<GlobalNamespace::BeatmapCallbacksController*>();
+  if (bcc == nullptr) return;
+  if (Runtime::Instance().GetCurrentBeatmapData() == nullptr) {
+    auto* cbd = il2cpp_utils::try_cast<CustomJSONData::CustomBeatmapData>(bcc->_beatmapData).value_or(nullptr);
+    if (cbd != nullptr) Runtime::Instance().PrepareBeatmapEarly(cbd);
+  }
   Runtime::Instance().ReplaceSaberVisuals(self, saber, parent);
 }
 MAKE_HOOK_MATCH(GameNoteController_Init, &GlobalNamespace::GameNoteController::Init, void, GlobalNamespace::GameNoteController* self, GlobalNamespace::NoteData* noteData, ByRef<GlobalNamespace::NoteSpawnData> noteSpawnData, GlobalNamespace::NoteVisualModifierType noteVisualModifierType, float cutAngleTolerance, float uniformScale) {
