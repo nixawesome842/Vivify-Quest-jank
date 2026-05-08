@@ -1,4 +1,3 @@
-
 bool SameBlitData(BlitMaterialData const& left, BlitMaterialData const& right) {
   return left.material == right.material &&
          left.priority == right.priority &&
@@ -174,9 +173,32 @@ void HandleCreateScreenTexture(rapidjson::Value const& json) {
   if (auto w = ReadInt(json, "width")) dt.width = *w;
   if (auto h = ReadInt(json, "height")) dt.height = *h;
   if (auto fmt = ReadStringView(json, "colorFormat"))
-    dt.format = Vivify::Parsing::ParseRenderTextureFormat(*fmt);
+    dt.format = [&]() -> std::optional<UnityEngine::RenderTextureFormat> {
+      auto s = *fmt;
+      if (s == "ARGB32") return UnityEngine::RenderTextureFormat::ARGB32;
+      if (s == "Depth") return UnityEngine::RenderTextureFormat::Depth;
+      if (s == "ARGBHalf") return UnityEngine::RenderTextureFormat::ARGBHalf;
+      if (s == "Shadowmap") return UnityEngine::RenderTextureFormat::Shadowmap;
+      if (s == "RGB565") return UnityEngine::RenderTextureFormat::RGB565;
+      if (s == "ARGB4444") return UnityEngine::RenderTextureFormat::ARGB4444;
+      if (s == "ARGB1555") return UnityEngine::RenderTextureFormat::ARGB1555;
+      if (s == "Default") return UnityEngine::RenderTextureFormat::Default;
+      if (s == "ARGBFloat") return UnityEngine::RenderTextureFormat::ARGBFloat;
+      if (s == "RGFloat") return UnityEngine::RenderTextureFormat::RGFloat;
+      if (s == "RFloat") return UnityEngine::RenderTextureFormat::RFloat;
+      if (s == "RHalf") return UnityEngine::RenderTextureFormat::RHalf;
+      if (s == "R8") return UnityEngine::RenderTextureFormat::R8;
+      if (s == "DefaultHDR") return UnityEngine::RenderTextureFormat::DefaultHDR;
+      return std::nullopt;
+    }();
   if (auto fm = ReadStringView(json, "filterMode"))
-    dt.filterMode = Vivify::Parsing::ParseFilterMode(*fm);
+    dt.filterMode = [&]() -> std::optional<UnityEngine::FilterMode> {
+      auto s = *fm;
+      if (s == "Point") return UnityEngine::FilterMode::Point;
+      if (s == "Bilinear") return UnityEngine::FilterMode::Bilinear;
+      if (s == "Trilinear") return UnityEngine::FilterMode::Trilinear;
+      return std::nullopt;
+    }();
   if (dt.xRatio <= 0.0f) dt.xRatio = 1.0f;
   if (dt.yRatio <= 0.0f) dt.yRatio = 1.0f;
   int w = std::clamp(dt.width.value_or(1024), 1, kMaxRenderTextureSize);
@@ -319,9 +341,23 @@ void HandleCreateCamera(rapidjson::Value const& json) {
 }
 void ParseCameraPropertyData(rapidjson::Value const& json, CameraPropertyData& out) {
   if (auto dtm = ReadStringView(json, "depthTextureMode"))
-    out.depthTextureMode = Vivify::Parsing::ParseDepthTextureMode(*dtm);
+    out.depthTextureMode = [&]() -> std::optional<UnityEngine::DepthTextureMode> {
+      auto s = *dtm;
+      if (s == "None") return UnityEngine::DepthTextureMode::None;
+      if (s == "Depth") return UnityEngine::DepthTextureMode::Depth;
+      if (s == "DepthNormals") return UnityEngine::DepthTextureMode::DepthNormals;
+      if (s == "MotionVectors") return UnityEngine::DepthTextureMode::MotionVectors;
+      return std::nullopt;
+    }();
   if (auto cf = ReadStringView(json, "clearFlags"))
-    out.clearFlags = Vivify::Parsing::ParseClearFlags(*cf);
+    out.clearFlags = [&]() -> std::optional<UnityEngine::CameraClearFlags> {
+      auto s = *cf;
+      if (s == "Skybox") return UnityEngine::CameraClearFlags::Skybox;
+      if (s == "Color" || s == "SolidColor") return UnityEngine::CameraClearFlags::Color;
+      if (s == "Depth") return UnityEngine::CameraClearFlags::Depth;
+      if (s == "Nothing") return UnityEngine::CameraClearFlags::Nothing;
+      return std::nullopt;
+    }();
   auto* bgVal = ReadValuePtr(json, "backgroundColor");
   if (bgVal != nullptr && bgVal->IsArray() && bgVal->Size() >= 3) {
     auto arr = bgVal->GetArray();
