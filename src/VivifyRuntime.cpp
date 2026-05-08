@@ -3267,13 +3267,13 @@ MAKE_HOOK_MATCH(GameNoteController_Init, &GlobalNamespace::GameNoteController::I
   GameNoteController_Init(self, noteData, noteSpawnData, noteVisualModifierType, cutAngleTolerance, uniformScale);
   Runtime::Instance().RestoreNoteVisuals(self);
   if (Runtime::Instance().GetCurrentBeatmapData() == nullptr || Runtime::Instance().IsResetting()) return;
-  Runtime::Instance().ForceGameObjectRenderersOnTop(self->get_gameObject().unsafePtr());
   if (noteData == nullptr || noteData->get_gameplayType() != GlobalNamespace::NoteData_GameplayType::Normal) return;
   AssignedPrefabKind kind = noteData->get_cutDirection().value__ == GlobalNamespace::NoteCutDirection::Any.value__
       ? AssignedPrefabKind::AnyDirectionObject
       : AssignedPrefabKind::Object;
   auto infos = Runtime::Instance().FindAssignedPrefabs("colorNotes", noteData, kind);
   if (!infos.empty()) {
+    Runtime::Instance().ForceGameObjectRenderersOnTop(self->get_gameObject().unsafePtr());
     Runtime::Instance().ReplaceNoteVisuals(self, infos);
   }
 }
@@ -3281,19 +3281,23 @@ MAKE_HOOK_MATCH(BombNoteController_Init, &GlobalNamespace::BombNoteController::I
   BombNoteController_Init(self, noteData, noteSpawnData);
   Runtime::Instance().RestoreNoteVisuals(self);
   if (Runtime::Instance().GetCurrentBeatmapData() == nullptr || Runtime::Instance().IsResetting()) return;
-  Runtime::Instance().ForceGameObjectRenderersOnTop(self->get_gameObject().unsafePtr());
   auto infos = Runtime::Instance().FindAssignedPrefabs("bombNotes", noteData, AssignedPrefabKind::Object);
-  if (!infos.empty()) Runtime::Instance().ReplaceNoteVisuals(self, infos);
+  if (!infos.empty()) {
+    Runtime::Instance().ForceGameObjectRenderersOnTop(self->get_gameObject().unsafePtr());
+    Runtime::Instance().ReplaceNoteVisuals(self, infos);
+  }
 }
 MAKE_HOOK_MATCH(BurstSliderGameNoteController_Init, &GlobalNamespace::BurstSliderGameNoteController::Init, void, GlobalNamespace::BurstSliderGameNoteController* self, GlobalNamespace::NoteData* noteData, ByRef<GlobalNamespace::NoteSpawnData> noteSpawnData, GlobalNamespace::NoteVisualModifierType noteVisualModifierType, float uniformScale) {
   BurstSliderGameNoteController_Init(self, noteData, noteSpawnData, noteVisualModifierType, uniformScale);
   Runtime::Instance().RestoreNoteVisuals(self);
   if (Runtime::Instance().GetCurrentBeatmapData() == nullptr || Runtime::Instance().IsResetting()) return;
-  Runtime::Instance().ForceGameObjectRenderersOnTop(self->get_gameObject().unsafePtr());
   if (noteData == nullptr) return;
   auto* objectType = noteData->get_gameplayType() == GlobalNamespace::NoteData_GameplayType::BurstSliderHead ? "burstSliders" : "burstSliderElements";
   auto infos = Runtime::Instance().FindAssignedPrefabs(objectType, noteData, AssignedPrefabKind::Object);
-  if (!infos.empty()) Runtime::Instance().ReplaceNoteVisuals(self, infos);
+  if (!infos.empty()) {
+    Runtime::Instance().ForceGameObjectRenderersOnTop(self->get_gameObject().unsafePtr());
+    Runtime::Instance().ReplaceNoteVisuals(self, infos);
+  }
 }
 MAKE_HOOK_MATCH(NoteCutCoreEffectsSpawner_SpawnNoteCutEffect, &GlobalNamespace::NoteCutCoreEffectsSpawner::SpawnNoteCutEffect, void, GlobalNamespace::NoteCutCoreEffectsSpawner* self, ByRef<GlobalNamespace::NoteCutInfo> noteCutInfo, GlobalNamespace::NoteController* noteController, int32_t sparkleParticlesCount, int32_t explosionParticlesCount) {
   if (Runtime::Instance().GetCurrentBeatmapData() == nullptr || Runtime::Instance().IsResetting()) {
