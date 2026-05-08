@@ -1,3 +1,4 @@
+
 bool SameBlitData(BlitMaterialData const& left, BlitMaterialData const& right) {
   return left.material == right.material &&
          left.priority == right.priority &&
@@ -173,9 +174,9 @@ void HandleCreateScreenTexture(rapidjson::Value const& json) {
   if (auto w = ReadInt(json, "width")) dt.width = *w;
   if (auto h = ReadInt(json, "height")) dt.height = *h;
   if (auto fmt = ReadStringView(json, "colorFormat"))
-    dt.format = Parsing::ParseRenderTextureFormat(*fmt);
+    dt.format = Vivify::Parsing::ParseRenderTextureFormat(*fmt);
   if (auto fm = ReadStringView(json, "filterMode"))
-    dt.filterMode = Parsing::ParseFilterMode(*fm);
+    dt.filterMode = Vivify::Parsing::ParseFilterMode(*fm);
   if (dt.xRatio <= 0.0f) dt.xRatio = 1.0f;
   if (dt.yRatio <= 0.0f) dt.yRatio = 1.0f;
   int w = std::clamp(dt.width.value_or(1024), 1, kMaxRenderTextureSize);
@@ -318,9 +319,9 @@ void HandleCreateCamera(rapidjson::Value const& json) {
 }
 void ParseCameraPropertyData(rapidjson::Value const& json, CameraPropertyData& out) {
   if (auto dtm = ReadStringView(json, "depthTextureMode"))
-    out.depthTextureMode = Parsing::ParseDepthTextureMode(*dtm);
+    out.depthTextureMode = Vivify::Parsing::ParseDepthTextureMode(*dtm);
   if (auto cf = ReadStringView(json, "clearFlags"))
-    out.clearFlags = Parsing::ParseClearFlags(*cf);
+    out.clearFlags = Vivify::Parsing::ParseClearFlags(*cf);
   auto* bgVal = ReadValuePtr(json, "backgroundColor");
   if (bgVal != nullptr && bgVal->IsArray() && bgVal->Size() >= 3) {
     auto arr = bgVal->GetArray();
