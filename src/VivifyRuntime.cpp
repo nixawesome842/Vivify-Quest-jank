@@ -886,14 +886,22 @@ public:
 
     VisualReplacement replacement;
     bool const hideOriginal = ShouldHideOriginal(validInfos);
+    // Capture original renderers BEFORE spawning the replacement prefab, so
+    // the spawned prefab's renderers are not accidentally included in this list.
     auto originalRenderers = noteController->GetComponentsInChildren<UnityEngine::Renderer*>(true);
     for (auto* info : validInfos) {
       InstantiateReplacementPrefab(*info, replacementParent, replacement);
     }
     if (replacement.spawnedObjects.empty() && replacement.disabledRenderers.empty()) return;
 
-    ApplyReplacementRenderersToMaterialBlock(
-        GetReplacementMaterialPropertyBlockController(noteController, replacementParent), replacement, hideOriginal);
+    // DO NOT call ApplyReplacementRenderersToMaterialBlock here.
+    // That function replaces the MaterialPropertyBlockController's renderer list
+    // with the custom prefab's renderers, causing Beat Saber's note-color system
+    // to paint the custom note with saber colors (red/blue).  Custom note prefabs
+    // manage their own material colors and should not be overridden by the MPB.
+    // The saber path (ApplySaberVisuals) intentionally DOES update the MPB via
+    // ApplySaberReplacementColor, so sabers still color-sync correctly.
+
     if (hideOriginal) {
       DisableOriginalRenderers(originalRenderers, replacement);
     }
@@ -932,7 +940,16 @@ public:
 
     VisualReplacement replacement;
     if (ShouldHideOriginal(validModelInfos)) {
-      DisableOriginalRenderers(smc->get_gameObject(), replacement);
+      // Disable renderers on the parent transform's entire subtree so that the
+      // hilt, blade glow and any sibling visuals are all hidden - not just the
+      // children of the SaberModelController's own gameObject. This prevents the
+      // stock hilt from remaining visible when the custom saber model loads.
+      auto* parentGO = parent->get_gameObject().unsafePtr();
+      if (IsAlive(parentGO)) {
+        DisableOriginalRenderers(parentGO, replacement);
+      } else {
+        DisableOriginalRenderers(smc->get_gameObject(), replacement);
+      }
     }
     for (auto* info : validModelInfos) {
       InstantiateReplacementPrefab(*info, parent, replacement);
@@ -2226,11 +2243,6 @@ private:
         replacement.disabledRenderers.emplace_back(renderer);
       }
     }
-  }
-  bool UsesNoteVisualChild(GlobalNamespace::NoteController* noteController) const {
-    if (!IsAlive(noteController)) return false;
-    return il2cpp_utils::try_cast<GlobalNamespace::GameNoteController>(noteController).has_value() ||
-           il2cpp_utils::try_cast<GlobalNamespace::BurstSliderGameNoteController>(noteController).has_value();
   }
   UnityEngine::Transform* GetReplacementParent(GlobalNamespace::NoteController* noteController) {
     if (!IsAlive(noteController)) return nullptr;
