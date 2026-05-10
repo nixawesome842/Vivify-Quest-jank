@@ -502,9 +502,7 @@ struct BlitMaterialData {
   int pass = -1;
   std::optional<int> frame;
   std::string asset;
-  float eventBeat = 0.0f;
-  // Pre-resolved RenderTargetIdentifiers filled at command-buffer build time.
-  // Avoids repeated unordered_map lookups on every render call.
+  float eventBeat = 0.0f; 
   UnityEngine::Rendering::RenderTargetIdentifier resolvedSource;
   std::vector<UnityEngine::Rendering::RenderTargetIdentifier> resolvedTargetIds;
   bool targetsResolved = false;
@@ -789,9 +787,6 @@ int ColorPropertyId() {
   static int id = UnityEngine::Shader::PropertyToID(u"_Color");
   return id;
 }
-// Shader property IDs for the two ping-pong temporary RenderTextures used by
-// the command buffer blit pipeline. Using PropertyToID lets the command buffer
-// reference them by integer rather than string each frame.
 int VivifyMainRTId() {
   static int id = UnityEngine::Shader::PropertyToID(u"_VivifyMain");
   return id;
@@ -1020,8 +1015,6 @@ public:
     DetectSongRestart();
     UpdateSaberReplacementColors();
   }
-  // Resolve source/target RenderTargetIdentifiers for a blit effect at command
-  // buffer build time so we don't hit the unordered_map on every render call.
   UnityEngine::Rendering::RenderTargetIdentifier MainId() const {
     return UnityEngine::Rendering::RenderTargetIdentifier(VivifyMainRTId());
   }
@@ -1032,10 +1025,8 @@ public:
     return UnityEngine::Rendering::RenderTargetIdentifier(
         UnityEngine::Rendering::BuiltinRenderTextureType::CameraTarget);
   }
-  // Resolve a named source into a RenderTargetIdentifier. Returns nullopt if
-  // the name maps to _Main (handled by the caller via ping-pong) or is unknown.
   std::optional<UnityEngine::Rendering::RenderTargetIdentifier> ResolveSourceId(std::string const& name) const {
-    if (name == "_Main") return std::nullopt; // handled by caller
+    if (name == "_Main") return std::nullopt;
     if (auto it = _declaredTextures.find(name); it != _declaredTextures.end() && IsAlive(it->second.texture)) {
       return UnityEngine::Rendering::RenderTargetIdentifier(
           reinterpret_cast<UnityEngine::RenderTexture*>(it->second.texture));
@@ -1062,19 +1053,11 @@ public:
     _blitCommandBufferAttached = false;
     _blitCommandBufferDirty = true;
   }
-  // Build (or clear) the CommandBuffer that applies all active blit effects.
-  // Called from Update() after UpdateBlitEffects() so the effect list is fresh.
-  // The buffer is attached to the camera at CameraEvent::AfterEverything,
-  // which means it runs on the render thread once per eye without any
-  // MonoBehaviour overhead. Re-recording only happens when _blitCommandBufferDirty
-  // is set (effects added, expired, or cleared), not every frame.
   void RebuildBlitCommandBuffer(UnityEngine::Camera* camera) {
     bool const hasEffects = !_preEffects.empty() || !_postEffects.empty();
     bool const wantBuffer = IsAlive(camera) && hasEffects &&
                             !GetDisableAllBlits() && !_isResetting &&
                             !_pauseMenuActive && _currentBeatmapData != nullptr;
-
-    // Camera changed — detach from old camera and force a rebuild.
     if (_blitCommandBufferCamera != camera) {
       if (IsAlive(_blitCommandBufferCamera) && _blitCommandBuffer != nullptr && _blitCommandBufferAttached) {
         _blitCommandBufferCamera->RemoveCommandBuffer(
@@ -1086,7 +1069,6 @@ public:
     }
 
     if (!wantBuffer) {
-      // Detach if attached.
       if (_blitCommandBufferAttached && IsAlive(_blitCommandBufferCamera) && _blitCommandBuffer != nullptr) {
         _blitCommandBufferCamera->RemoveCommandBuffer(
             UnityEngine::Rendering::CameraEvent::AfterEverything, _blitCommandBuffer);
@@ -1095,42 +1077,27 @@ public:
       return;
     }
 
-    if (!_blitCommandBufferDirty) return; // Nothing changed — reuse the existing buffer.
-
-    // Allocate the CommandBuffer once and reuse it across frames.
+    if (!_blitCommandBufferDirty) return; 
     if (_blitCommandBuffer == nullptr) {
       _blitCommandBuffer = UnityEngine::Rendering::CommandBuffer::New_ctor();
       _blitCommandBuffer->set_name(u"VivifyBlits");
     }
-
-    // Detach before re-recording so Unity doesn't execute a half-rebuilt buffer.
     if (_blitCommandBufferAttached) {
       camera->RemoveCommandBuffer(
           UnityEngine::Rendering::CameraEvent::AfterEverything, _blitCommandBuffer);
       _blitCommandBufferAttached = false;
     }
     _blitCommandBuffer->Clear();
-
-    // Allocate ping-pong temporary RTs sized to the camera's current resolution.
-    // Unity pools these internally, so there's no per-frame heap allocation.
     auto desc = UnityEngine::RenderTextureDescriptor(camera->get_pixelWidth(), camera->get_pixelHeight());
     desc.set_msaaSamples(1);
     desc.set_depthBufferBits(0);
     _blitCommandBuffer->GetTemporaryRT(VivifyMainRTId(), desc);
     _blitCommandBuffer->GetTemporaryRT(VivifyScratchRTId(), desc);
-
-    // Copy the camera output into main so effects can read from it.
     _blitCommandBuffer->Blit(CameraTargetId(), MainId());
-
-    // mainIsActive == true  → main holds the latest result, scratch is free
-    // mainIsActive == false → scratch holds the latest result, main is free
     bool mainIsActive = true;
-
     auto encodeEffects = [&](std::vector<ActiveBlitEffect>& effects) {
       for (auto& effect : effects) {
         auto& data = effect.data;
-
-        // Validate material once per rebuild.
         if (!CanUseBlitMaterial(data.material, data.pass)) {
           if (data.material != nullptr && GetVivifyDebugLogging()) {
             PaperLogger.warn("Vivify CB: invalid material pass={} source={}", data.pass, data.source);
@@ -1138,9 +1105,6 @@ public:
           data.targetsResolved = false;
           continue;
         }
-
-        // Resolve source and target identifiers on first encode or after any
-        // change (MarkBlitCommandBufferDirty resets targetsResolved).
         if (!data.targetsResolved) {
           data.resolvedTargetIds.clear();
           bool sourceIsMain = (data.source == "_Main");
@@ -1156,7 +1120,6 @@ public:
           }
           for (auto const& tName : data.targets) {
             if (tName == "_Main") {
-              // Sentinel: -1 means ping-pong main/scratch
               data.resolvedTargetIds.push_back(UnityEngine::Rendering::RenderTargetIdentifier(-1));
             } else if (auto it = _declaredTextures.find(tName);
                        it != _declaredTextures.end() && IsAlive(it->second.texture)) {
@@ -1170,15 +1133,12 @@ public:
           }
           data.targetsResolved = true;
         }
-
-        // Source: either ping-pong current buffer or a pre-resolved external RT.
         auto const srcId = (data.source == "_Main")
             ? (mainIsActive ? MainId() : ScratchId())
             : data.resolvedSource;
 
         for (int ti = 0; ti < static_cast<int>(data.resolvedTargetIds.size()); ti++) {
           auto const& rawTarget = data.resolvedTargetIds[ti];
-          // Sentinel value -1 → ping-pong _Main target
           bool const isPingPong = (rawTarget == UnityEngine::Rendering::RenderTargetIdentifier(-1));
 
           if (isPingPong) {
@@ -1316,7 +1276,6 @@ private:
         ApplyCameraProperties(mainCam.unsafePtr(), props->second);
       }
     }
-    // Command buffer blits are attached directly to the camera — no MonoBehaviour needed.
     if (allowCameraApplier && !_pauseMenuActive) {
       RebuildBlitCommandBuffer(mainCam.unsafePtr());
     } else if (_blitCommandBufferAttached && IsAlive(_blitCommandBufferCamera)) {
@@ -1407,9 +1366,6 @@ private:
     }
     _gameplayOverlayCamera = nullptr;
   }
-  // CameraApplier is kept declared (for DEFINE_TYPE / cordl) but is never
-  // added to the camera anymore. All blit work is done via RebuildBlitCommandBuffer
-  // which attaches a CommandBuffer directly at CameraEvent::AfterEverything.
   void HandleLevelSelected(SongCore::API::LevelSelect::LevelWasSelectedEventArgs const& event) {
     ResetRuntime();
     _selectedLevelPath.clear();
