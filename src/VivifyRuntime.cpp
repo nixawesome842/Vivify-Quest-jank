@@ -792,7 +792,6 @@ public:
                                                        GlobalNamespace::NoteData* noteData,
                                                        AssignedPrefabKind kind) {
     std::vector<AssignedPrefabInfo*> result;
-    result.reserve(_assignedPrefabs.size());
     for (auto& info : _assignedPrefabs) {
       if (info.objectType != objectType || info.kind != kind) continue;
       if (AssignmentMatchesTracks(info, noteData)) {
@@ -803,7 +802,6 @@ public:
   }
   std::vector<AssignedPrefabInfo*> FindAssignedSaberPrefabs(int type) {
     std::vector<AssignedPrefabInfo*> result;
-    result.reserve(_assignedPrefabs.size());
     for (auto& info : _assignedPrefabs) {
       if (info.objectType == "saber" && info.kind == AssignedPrefabKind::Object &&
           info.saberType.has_value() && info.saberType.value() == type) {
@@ -814,7 +812,6 @@ public:
   }
   std::vector<AssignedPrefabInfo*> FindAssignedSaberTrailPrefabs(int type) {
     std::vector<AssignedPrefabInfo*> result;
-    result.reserve(_assignedPrefabs.size());
     for (auto& info : _assignedPrefabs) {
       if (info.objectType == "saber" && info.kind == AssignedPrefabKind::Trail &&
           info.saberType.has_value() && info.saberType.value() == type) {
@@ -1010,14 +1007,15 @@ public:
       }
       return;
     }
-    if (GetDisableAllBlits()) {
-      if (GetVivifyDebugLogging()) {
+    // All three bypass-to-passthrough conditions collapsed into one branch so we
+    // only call ExecuteBlit once in the common no-op case (menu, pause, reset).
+    bool const passthroughOnly = GetDisableAllBlits() || _isResetting || _pauseMenuActive ||
+                                 _currentBeatmapData == nullptr ||
+                                 (_preEffects.empty() && _postEffects.empty());
+    if (passthroughOnly) {
+      if (GetDisableAllBlits() && GetVivifyDebugLogging()) {
         PaperLogger.info("Vivify blit passthrough: Disable All Blits is enabled");
       }
-      ExecuteBlit(static_cast<UnityEngine::Texture*>(src), dest, nullptr, -1);
-      return;
-    }
-    if (_isResetting || _pauseMenuActive || _currentBeatmapData == nullptr || (_preEffects.empty() && _postEffects.empty())) {
       ExecuteBlit(static_cast<UnityEngine::Texture*>(src), dest, nullptr, -1);
       return;
     }
@@ -1490,7 +1488,7 @@ private:
     } else if (type == kSetGlobalPropertyEvent) {
       HandleSetGlobalProperty(customEventData, *json);
     } else if (IsPostProcessingEvent(type)) {
-      HandleBlit(customEventData, *json, type);
+      HandleBlit(customEventData, *json);
     } else if (type == kCreateCameraEvent) {
       HandleCreateCamera(*json);
     } else if (type == kCreateScreenTextureEvent) {
@@ -1612,6 +1610,8 @@ private:
     _beatmapAD = nullptr;
     _audioTimeSyncController = nullptr;
     _lastSongTime = -1.0f;
+    _songTimeCacheFrame = -1;
+    _songTimeCache = 0.0f;
     _pauseMenuActive = false;
     _unsupportedEventWarnings.clear();
     _isResetting = false;
@@ -2260,11 +2260,6 @@ private:
       }
     }
   }
-  bool UsesNoteVisualChild(GlobalNamespace::NoteController* noteController) const {
-    if (!IsAlive(noteController)) return false;
-    return il2cpp_utils::try_cast<GlobalNamespace::GameNoteController>(noteController).has_value() ||
-           il2cpp_utils::try_cast<GlobalNamespace::BurstSliderGameNoteController>(noteController).has_value();
-  }
   UnityEngine::Transform* GetReplacementParent(GlobalNamespace::NoteController* noteController) {
     if (!IsAlive(noteController)) return nullptr;
     // Use the raw ____noteTransform backing field (offset 0x28), NOT GetChild(0).
@@ -2658,10 +2653,21 @@ private:
     }
   }
   float CurrentSongTime() {
+    // Cache the result per-frame: during a single Update() tick this function is
+    // called 6+ times (UpdateMaterialAnimations, UpdateGlobalAnimations,
+    // UpdateAnimatorAnimations, UpdateBlitEffects, UpdateRenderSettingAnimations,
+    // DetectSongRestart). Each call normally goes through il2cpp to
+    // _audioTimeSyncController->get_songTime(). Caching by frame number reduces
+    // this to one il2cpp call per frame while keeping event handlers (which run
+    // on a different cadence) always getting a fresh value.
+    int const frame = static_cast<int>(UnityEngine::Time::get_frameCount());
+    if (frame == _songTimeCacheFrame) return _songTimeCache;
+    _songTimeCacheFrame = frame;
     if (_audioTimeSyncController == nullptr) {
       _audioTimeSyncController = UnityEngine::Object::FindObjectOfType<GlobalNamespace::AudioTimeSyncController*>();
     }
-    return _audioTimeSyncController != nullptr ? _audioTimeSyncController->get_songTime() : 0.0f;
+    _songTimeCache = _audioTimeSyncController != nullptr ? _audioTimeSyncController->get_songTime() : 0.0f;
+    return _songTimeCache;
   }
   void DetectSongRestart() {
     if (_currentBeatmapData == nullptr || _isResetting) return;
@@ -3298,6 +3304,8 @@ private:
   std::unordered_map<std::string, std::string> _assetPaths;
   std::unordered_set<CustomJSONData::CustomEventData*> _catchUpAppliedCustomEvents;
   float _lastSongTime = -1.0f;
+  int _songTimeCacheFrame = -1;
+  float _songTimeCache = 0.0f;
   bool _loggedUnityPlatformInfo = false;
   bool _pauseMenuActive = false;
   bool _isResetting = false;
