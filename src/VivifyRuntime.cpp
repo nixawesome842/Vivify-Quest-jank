@@ -20,6 +20,7 @@
 #include "GlobalNamespace/AudioTimeSyncController.hpp"
 #include "GlobalNamespace/AlwaysVisibleQuad.hpp"
 #include "GlobalNamespace/BeatmapCallbacksController.hpp"
+#include "GlobalNamespace/GameplayCoreSceneSetup.hpp"
 #include "GlobalNamespace/BpmController.hpp"
 #include "GlobalNamespace/StaticBeatmapObjectSpawnMovementData.hpp"
 #include "UnityEngine/Animator.hpp"
@@ -809,6 +810,18 @@ public:
     return runtime;
   }
   CustomJSONData::CustomBeatmapData* GetCurrentBeatmapData() const { return _currentBeatmapData; }
+  // Called from BeatmapCallbacksController_Start before any events are dispatched.
+  // Ensures the bundle is loaded and all beat-0 events are applied before the
+  // first note or custom event fires, so custom environments and shaders are
+  // present from the very start of the song.
+  void EagerPrepareFromController(GlobalNamespace::BeatmapCallbacksController* callbackController) {
+    if (callbackController == nullptr) return;
+    auto* customBeatmapData = GetCustomBeatmapData(callbackController);
+    if (customBeatmapData == nullptr) return;
+    if (_currentBeatmapData == customBeatmapData) return; // already prepared
+    PaperLogger.info("Vivify EagerPrepare: loading bundle and replaying beat-0 events before song starts");
+    PrepareBeatmap(customBeatmapData);
+  }
   bool IsResetting() const { return _isResetting; }
   std::vector<AssignedPrefabInfo*> FindAssignedPrefabs(std::string_view objectType,
                                                        GlobalNamespace::NoteData* noteData,
@@ -1511,13 +1524,13 @@ private:
     return il2cpp_utils::try_cast<CustomJSONData::CustomBeatmapData>(callbackController->_beatmapData).value_or(nullptr);
   }
   bool EnsureBeatmapPrepared(GlobalNamespace::BeatmapCallbacksController* callbackController) {
+    // PrepareBeatmap is now called eagerly from BeatmapCallbacksController_Start
+    // before any events fire. If we somehow reach here without _currentBeatmapData
+    // set (e.g. a non-Vivify map), attempt a lazy init as fallback.
+    if (_currentBeatmapData != nullptr) return true;
     auto* customBeatmapData = GetCustomBeatmapData(callbackController);
-    if (customBeatmapData == nullptr) {
-      return false;
-    }
-    if (_currentBeatmapData == customBeatmapData) {
-      return true;
-    }
+    if (customBeatmapData == nullptr) return false;
+    PaperLogger.warn("Vivify EnsureBeatmapPrepared: late fallback — PrepareBeatmap was not called eagerly");
     PrepareBeatmap(customBeatmapData);
     return _currentBeatmapData == customBeatmapData;
   }
@@ -1535,20 +1548,60 @@ private:
     }
     LoadMainBundle();
     PreloadInstantiatePrefabs();
-    ApplyMissedAssignObjectPrefabEvents();
+    ApplyMissedVivifyEvents();
     _lastSongTime = CurrentSongTime();
   }
-  void ApplyMissedAssignObjectPrefabEvents() {
+  // Replay all Vivify events whose beat time <= songTime + epsilon at the moment
+  // the gameplay scene starts. Previously only AssignObjectPrefab was replayed,
+  // which meant custom environments, shader effects, render settings, cameras,
+  // and blit effects specified at beat 0 (or at negative beats for pre-song
+  // setup) were silently missed entirely.
+  void ApplyMissedVivifyEvents() {
     if (_currentBeatmapData == nullptr) return;
     float const songTime = CurrentSongTime();
-    float const catchUpTime = songTime + 0.05f;
+    // Use a generous window — the audio sync controller may not be at beat 0
+    // exactly when we call this. Any event at a beat that maps to <= songTime+0.1s
+    // is considered "already past" and must be applied now.
+    float const catchUpTime = songTime + 0.10f;
+    _catchUpAppliedCustomEvents.clear();
     for (auto* customEventData : _currentBeatmapData->customEventDatas) {
-      if (customEventData == nullptr || customEventData->type != kAssignObjectPrefabEvent) continue;
+      if (customEventData == nullptr) continue;
       if (customEventData->time > catchUpTime) continue;
+      std::string_view type = customEventData->type;
+      if (!IsVivifyEvent(type)) continue;
       auto* json = GetEventJson(customEventData);
       if (json == nullptr) continue;
-      HandleAssignObjectPrefab(customEventData, *json);
-      _catchUpAppliedCustomEvents.emplace(customEventData);
+      if (GetVivifyDebugLogging()) {
+        PaperLogger.info("Vivify catch-up event: type='{}' beat={}", std::string(type), customEventData->time);
+      }
+      // Dispatch through the same handler as live events so all state is set up
+      // identically regardless of whether an event fired at song start or not.
+      if (type == kInstantiatePrefabEvent) {
+        InstantiatePrefab(customEventData, *json);
+      } else if (type == kDestroyObjectEvent) {
+        DestroyObjects(*json);
+      } else if (type == kSetMaterialPropertyEvent) {
+        HandleSetMaterialProperty(customEventData, *json);
+      } else if (type == kSetAnimatorPropertyEvent) {
+        HandleSetAnimatorProperty(customEventData, *json);
+      } else if (type == kSetGlobalPropertyEvent) {
+        HandleSetGlobalProperty(customEventData, *json);
+      } else if (IsPostProcessingEvent(type)) {
+        HandleBlit(customEventData, *json);
+      } else if (type == kCreateCameraEvent) {
+        HandleCreateCamera(*json);
+      } else if (type == kCreateScreenTextureEvent) {
+        HandleCreateScreenTexture(*json);
+      } else if (type == kSetCameraPropertyEvent) {
+        HandleSetCameraProperty(*json);
+      } else if (type == kSetRenderingSettingsEvent) {
+        HandleSetRenderingSettings(customEventData, *json);
+      } else if (type == kAssignObjectPrefabEvent) {
+        HandleAssignObjectPrefab(customEventData, *json);
+        // Mark AssignObjectPrefab as applied so the live callback skips it
+        // when BeatmapCallbacksController fires it again on playback.
+        _catchUpAppliedCustomEvents.emplace(customEventData);
+      }
     }
   }
   void ResetRuntime() {
@@ -3212,6 +3265,17 @@ private:
   bool _isResetting = false;
 };
 }
+MAKE_HOOK_MATCH(BeatmapCallbacksController_Start, &GlobalNamespace::BeatmapCallbacksController::Start, void,
+                GlobalNamespace::BeatmapCallbacksController* self) {
+  // Call the original Start() first so the controller is fully initialized
+  // (beatmap data, timing data, etc.) before we try to read from it.
+  BeatmapCallbacksController_Start(self);
+  // Eagerly load the Vivify bundle and replay all beat-0/negative-beat events
+  // before the BeatmapCallbacksUpdater starts firing them. Without this, the
+  // first event callback triggers a synchronous LoadFromFile in the middle of
+  // gameplay, and everything before that first event is permanently lost.
+  Runtime::Instance().EagerPrepareFromController(self);
+}
 MAKE_HOOK_MATCH(SaberModelController_Init, &GlobalNamespace::SaberModelController::Init, void, GlobalNamespace::SaberModelController* self, UnityEngine::Transform* parent, GlobalNamespace::Saber* saber, UnityEngine::Color trailTintColor) {
   SaberModelController_Init(self, parent, saber, trailTintColor);
   Runtime::Instance().TrackSaberModel(self, saber, parent);
@@ -3344,6 +3408,7 @@ MAKE_HOOK_MATCH(GamePause_Resume, &GlobalNamespace::GamePause::Resume, void, Glo
 }
 void LateLoad() {
   Runtime::Instance().LateLoad();
+  INSTALL_HOOK(PaperLogger, BeatmapCallbacksController_Start);
   INSTALL_HOOK(PaperLogger, SaberModelController_Init);
   INSTALL_HOOK(PaperLogger, GameNoteController_Init);
   INSTALL_HOOK(PaperLogger, BombNoteController_Init);
