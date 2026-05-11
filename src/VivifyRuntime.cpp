@@ -46,10 +46,6 @@
 #include "UnityEngine/RenderTextureDescriptor.hpp"
 #include "UnityEngine/RenderTextureFormat.hpp"
 #include "UnityEngine/Rendering/AmbientMode.hpp"
-#include "UnityEngine/Rendering/CommandBuffer.hpp"
-#include "UnityEngine/Rendering/CameraEvent.hpp"
-#include "UnityEngine/Rendering/RenderTargetIdentifier.hpp"
-#include "UnityEngine/Rendering/BuiltinRenderTextureType.hpp"
 #include "UnityEngine/Shader.hpp"
 #include "UnityEngine/StereoTargetEyeMask.hpp"
 #include "UnityEngine/SystemInfo.hpp"
@@ -211,19 +207,31 @@ void SetMultipassShaderState(bool enabled,
                              UnityEngine::XR::XRSettings_StereoRenderingMode stereoMode =
                                  UnityEngine::XR::XRSettings_StereoRenderingMode::MultiPass,
                              int eye = 0) {
+  // Cache last applied state — OnPreRender fires up to 2x per frame for stereo.
+  // Skipping redundant calls avoids 10 il2cpp boundary crossings per no-op invocation.
+  struct MultipassState {
+    bool enabled = false;
+    int stereoMode = -1;
+    int eye = -1;
+    bool initialized = false;
+  };
+  static MultipassState last;
+  int const modeVal = stereoMode.value__;
+  if (last.initialized && last.enabled == enabled && last.stereoMode == modeVal && last.eye == eye) return;
+  last = {enabled, modeVal, eye, true};
   SetGlobalKeyword(kVivifyMultipassKeyword, enabled);
   SetGlobalKeyword(kUnitySinglePassStereoKeyword,
-                   enabled && stereoMode.value__ != UnityEngine::XR::XRSettings_StereoRenderingMode::MultiPass.value__);
+                   enabled && modeVal != UnityEngine::XR::XRSettings_StereoRenderingMode::MultiPass.value__);
   SetGlobalKeyword(kUnitySinglePassInstancedKeyword,
-                   enabled && stereoMode.value__ == UnityEngine::XR::XRSettings_StereoRenderingMode::SinglePassInstanced.value__);
+                   enabled && modeVal == UnityEngine::XR::XRSettings_StereoRenderingMode::SinglePassInstanced.value__);
   SetGlobalKeyword(kUnityStereoInstancingEnabledKeyword,
-                   enabled && stereoMode.value__ == UnityEngine::XR::XRSettings_StereoRenderingMode::SinglePassInstanced.value__);
+                   enabled && modeVal == UnityEngine::XR::XRSettings_StereoRenderingMode::SinglePassInstanced.value__);
   SetGlobalKeyword(kUnitySinglePassMultiviewKeyword,
-                   enabled && stereoMode.value__ == UnityEngine::XR::XRSettings_StereoRenderingMode::SinglePassMultiview.value__);
+                   enabled && modeVal == UnityEngine::XR::XRSettings_StereoRenderingMode::SinglePassMultiview.value__);
   SetGlobalKeyword(kUnityStereoMultiviewEnabledKeyword,
-                   enabled && stereoMode.value__ == UnityEngine::XR::XRSettings_StereoRenderingMode::SinglePassMultiview.value__);
+                   enabled && modeVal == UnityEngine::XR::XRSettings_StereoRenderingMode::SinglePassMultiview.value__);
   SetGlobalKeyword(kUnityDoubleWideStereoKeyword,
-                   enabled && stereoMode.value__ == UnityEngine::XR::XRSettings_StereoRenderingMode::SinglePass.value__);
+                   enabled && modeVal == UnityEngine::XR::XRSettings_StereoRenderingMode::SinglePass.value__);
   UnityEngine::Shader::SetGlobalInt(MultipassEyePropertyId(), eye);
   UnityEngine::Shader::SetGlobalInt(UnityStereoEyeIndexPropertyId(), eye);
   UnityEngine::Shader::SetGlobalInt(UnityStereoActiveEyePropertyId(), eye);
@@ -478,12 +486,14 @@ struct ActiveMaterialAnimation {
   std::vector<MaterialPropertyChange> properties;
   float startTime = 0.0f;
   float duration = 0.0f;
+  float endTime = 0.0f; // startTime + duration, precomputed to avoid per-frame addition
   Functions easing = Functions::EaseLinear;
 };
 struct ActiveGlobalAnimation {
   std::vector<MaterialPropertyChange> properties;
   float startTime = 0.0f;
   float duration = 0.0f;
+  float endTime = 0.0f;
   Functions easing = Functions::EaseLinear;
 };
 struct ActiveAnimatorAnimation {
@@ -491,6 +501,7 @@ struct ActiveAnimatorAnimation {
   std::vector<AnimatorPropertyChange> properties;
   float startTime = 0.0f;
   float duration = 0.0f;
+  float endTime = 0.0f;
   Functions easing = Functions::EaseLinear;
 };
 enum class PostProcessingOrder { BeforeMainEffect, AfterMainEffect };
@@ -503,11 +514,6 @@ struct BlitMaterialData {
   std::optional<int> frame;
   std::string asset;
   float eventBeat = 0.0f;
-  // Pre-resolved RenderTargetIdentifiers filled at command-buffer build time.
-  // Avoids repeated unordered_map lookups on every render call.
-  UnityEngine::Rendering::RenderTargetIdentifier resolvedSource;
-  std::vector<UnityEngine::Rendering::RenderTargetIdentifier> resolvedTargetIds;
-  bool targetsResolved = false;
   bool operator<(BlitMaterialData const& o) const { return priority < o.priority; }
 };
 struct ActiveBlitEffect {
@@ -558,6 +564,7 @@ struct ActiveRenderSettingAnimation {
   std::vector<RenderSettingValue> settings;
   float startTime = 0.0f;
   float duration = 0.0f;
+  float endTime = 0.0f;
   Functions easing = Functions::EaseLinear;
 };
 enum class AssignedPrefabKind { Object, AnyDirectionObject, Debris, Trail };
@@ -727,54 +734,63 @@ std::vector<std::string> ReadStringListOrSingle(rapidjson::Value const& object, 
   return result;
 }
 Functions ParseEasing(std::string_view easing) {
-  if (easing == "easeStep"sv) return Functions::EaseStep;
-  if (easing == "easeInQuad"sv) return Functions::EaseInQuad;
-  if (easing == "easeOutQuad"sv) return Functions::EaseOutQuad;
-  if (easing == "easeInOutQuad"sv) return Functions::EaseInOutQuad;
-  if (easing == "easeInCubic"sv) return Functions::EaseInCubic;
-  if (easing == "easeOutCubic"sv) return Functions::EaseOutCubic;
-  if (easing == "easeInOutCubic"sv) return Functions::EaseInOutCubic;
-  if (easing == "easeInQuart"sv) return Functions::EaseInQuart;
-  if (easing == "easeOutQuart"sv) return Functions::EaseOutQuart;
-  if (easing == "easeInOutQuart"sv) return Functions::EaseInOutQuart;
-  if (easing == "easeInQuint"sv) return Functions::EaseInQuint;
-  if (easing == "easeOutQuint"sv) return Functions::EaseOutQuint;
-  if (easing == "easeInOutQuint"sv) return Functions::EaseInOutQuint;
-  if (easing == "easeInSine"sv) return Functions::EaseInSine;
-  if (easing == "easeOutSine"sv) return Functions::EaseOutSine;
-  if (easing == "easeInOutSine"sv) return Functions::EaseInOutSine;
-  if (easing == "easeInCirc"sv) return Functions::EaseInCirc;
-  if (easing == "easeOutCirc"sv) return Functions::EaseOutCirc;
-  if (easing == "easeInOutCirc"sv) return Functions::EaseInOutCirc;
-  if (easing == "easeInExpo"sv) return Functions::EaseInExpo;
-  if (easing == "easeOutExpo"sv) return Functions::EaseOutExpo;
-  if (easing == "easeInOutExpo"sv) return Functions::EaseInOutExpo;
-  if (easing == "easeInElastic"sv) return Functions::EaseInElastic;
-  if (easing == "easeOutElastic"sv) return Functions::EaseOutElastic;
-  if (easing == "easeInOutElastic"sv) return Functions::EaseInOutElastic;
-  if (easing == "easeInBack"sv) return Functions::EaseInBack;
-  if (easing == "easeOutBack"sv) return Functions::EaseOutBack;
-  if (easing == "easeInOutBack"sv) return Functions::EaseInOutBack;
-  if (easing == "easeInBounce"sv) return Functions::EaseInBounce;
-  if (easing == "easeOutBounce"sv) return Functions::EaseOutBounce;
-  if (easing == "easeInOutBounce"sv) return Functions::EaseInOutBounce;
-  return Functions::EaseLinear;
+  static std::unordered_map<std::string_view, Functions> const kEasingMap = {
+      {"easeStep"sv, Functions::EaseStep},
+      {"easeInQuad"sv, Functions::EaseInQuad},
+      {"easeOutQuad"sv, Functions::EaseOutQuad},
+      {"easeInOutQuad"sv, Functions::EaseInOutQuad},
+      {"easeInCubic"sv, Functions::EaseInCubic},
+      {"easeOutCubic"sv, Functions::EaseOutCubic},
+      {"easeInOutCubic"sv, Functions::EaseInOutCubic},
+      {"easeInQuart"sv, Functions::EaseInQuart},
+      {"easeOutQuart"sv, Functions::EaseOutQuart},
+      {"easeInOutQuart"sv, Functions::EaseInOutQuart},
+      {"easeInQuint"sv, Functions::EaseInQuint},
+      {"easeOutQuint"sv, Functions::EaseOutQuint},
+      {"easeInOutQuint"sv, Functions::EaseInOutQuint},
+      {"easeInSine"sv, Functions::EaseInSine},
+      {"easeOutSine"sv, Functions::EaseOutSine},
+      {"easeInOutSine"sv, Functions::EaseInOutSine},
+      {"easeInCirc"sv, Functions::EaseInCirc},
+      {"easeOutCirc"sv, Functions::EaseOutCirc},
+      {"easeInOutCirc"sv, Functions::EaseInOutCirc},
+      {"easeInExpo"sv, Functions::EaseInExpo},
+      {"easeOutExpo"sv, Functions::EaseOutExpo},
+      {"easeInOutExpo"sv, Functions::EaseInOutExpo},
+      {"easeInElastic"sv, Functions::EaseInElastic},
+      {"easeOutElastic"sv, Functions::EaseOutElastic},
+      {"easeInOutElastic"sv, Functions::EaseInOutElastic},
+      {"easeInBack"sv, Functions::EaseInBack},
+      {"easeOutBack"sv, Functions::EaseOutBack},
+      {"easeInOutBack"sv, Functions::EaseInOutBack},
+      {"easeInBounce"sv, Functions::EaseInBounce},
+      {"easeOutBounce"sv, Functions::EaseOutBounce},
+      {"easeInOutBounce"sv, Functions::EaseInOutBounce},
+  };
+  auto it = kEasingMap.find(easing);
+  return it != kEasingMap.end() ? it->second : Functions::EaseLinear;
 }
 MaterialPropertyKind ParseMaterialPropertyKind(std::string_view kind) {
-  if (kind == "Texture"sv) return MaterialPropertyKind::Texture;
-  if (kind == "Color"sv) return MaterialPropertyKind::Color;
-  if (kind == "Float"sv) return MaterialPropertyKind::Float;
-  if (kind == "Int"sv) return MaterialPropertyKind::Int;
-  if (kind == "Vector"sv) return MaterialPropertyKind::Vector;
-  if (kind == "Keyword"sv) return MaterialPropertyKind::Keyword;
-  return MaterialPropertyKind::Unsupported;
+  static std::unordered_map<std::string_view, MaterialPropertyKind> const kMap = {
+      {"Texture"sv, MaterialPropertyKind::Texture},
+      {"Color"sv, MaterialPropertyKind::Color},
+      {"Float"sv, MaterialPropertyKind::Float},
+      {"Int"sv, MaterialPropertyKind::Int},
+      {"Vector"sv, MaterialPropertyKind::Vector},
+      {"Keyword"sv, MaterialPropertyKind::Keyword},
+  };
+  auto it = kMap.find(kind);
+  return it != kMap.end() ? it->second : MaterialPropertyKind::Unsupported;
 }
 AnimatorPropertyKind ParseAnimatorPropertyKind(std::string_view kind) {
-  if (kind == "Bool"sv) return AnimatorPropertyKind::Bool;
-  if (kind == "Float"sv) return AnimatorPropertyKind::Float;
-  if (kind == "Integer"sv) return AnimatorPropertyKind::Integer;
-  if (kind == "Trigger"sv) return AnimatorPropertyKind::Trigger;
-  return AnimatorPropertyKind::Unsupported;
+  static std::unordered_map<std::string_view, AnimatorPropertyKind> const kMap = {
+      {"Bool"sv, AnimatorPropertyKind::Bool},
+      {"Float"sv, AnimatorPropertyKind::Float},
+      {"Integer"sv, AnimatorPropertyKind::Integer},
+      {"Trigger"sv, AnimatorPropertyKind::Trigger},
+  };
+  auto it = kMap.find(kind);
+  return it != kMap.end() ? it->second : AnimatorPropertyKind::Unsupported;
 }
 UnityEngine::Color VectorToColor(NEVector::Vector4 value) {
   return UnityEngine::Color(value.x, value.y, value.z, value.w);
@@ -782,25 +798,8 @@ UnityEngine::Color VectorToColor(NEVector::Vector4 value) {
 UnityEngine::Vector4 ToUnityVector(NEVector::Vector4 value) {
   return UnityEngine::Vector4(value.x, value.y, value.z, value.w);
 }
-float VectorDistance(UnityEngine::Vector3 a, UnityEngine::Vector3 b) {
-  float const x = a.x - b.x;
-  float const y = a.y - b.y;
-  float const z = a.z - b.z;
-  return std::sqrt((x * x) + (y * y) + (z * z));
-}
 int ColorPropertyId() {
   static int id = UnityEngine::Shader::PropertyToID(u"_Color");
-  return id;
-}
-// Shader property IDs for the two ping-pong temporary RenderTextures used by
-// the command buffer blit pipeline. Using PropertyToID lets the command buffer
-// reference them by integer rather than string each frame.
-int VivifyMainRTId() {
-  static int id = UnityEngine::Shader::PropertyToID(u"_VivifyMain");
-  return id;
-}
-int VivifyScratchRTId() {
-  static int id = UnityEngine::Shader::PropertyToID(u"_VivifyScratch");
   return id;
 }
 class Runtime {
@@ -1023,210 +1022,120 @@ public:
     DetectSongRestart();
     UpdateSaberReplacementColors();
   }
-  // Resolve source/target RenderTargetIdentifiers for a blit effect at command
-  // buffer build time so we don't hit the unordered_map on every render call.
-  static UnityEngine::Rendering::RenderTargetIdentifier const& MainId() {
-    static auto id = UnityEngine::Rendering::RenderTargetIdentifier(VivifyMainRTId());
-    return id;
-  }
-  static UnityEngine::Rendering::RenderTargetIdentifier const& ScratchId() {
-    static auto id = UnityEngine::Rendering::RenderTargetIdentifier(VivifyScratchRTId());
-    return id;
-  }
-  static UnityEngine::Rendering::RenderTargetIdentifier const& CameraTargetId() {
-    static auto id = UnityEngine::Rendering::RenderTargetIdentifier(
-        UnityEngine::Rendering::BuiltinRenderTextureType::CameraTarget);
-    return id;
-  }
-  // Resolve a named source into a RenderTargetIdentifier. Returns nullopt if
-  // the name maps to _Main (handled by the caller via ping-pong) or is unknown.
-  std::optional<UnityEngine::Rendering::RenderTargetIdentifier> ResolveSourceId(std::string const& name) const {
-    if (name == "_Main") return std::nullopt; // handled by caller
-    if (auto it = _declaredTextures.find(name); it != _declaredTextures.end() && IsAlive(it->second.texture)) {
-      return UnityEngine::Rendering::RenderTargetIdentifier(
-          reinterpret_cast<UnityEngine::RenderTexture*>(it->second.texture));
-    }
-    if (auto it = _secondaryCameras.find(name); it != _secondaryCameras.end() && IsAlive(it->second.colorRT)) {
-      return UnityEngine::Rendering::RenderTargetIdentifier(
-          reinterpret_cast<UnityEngine::RenderTexture*>(it->second.colorRT));
-    }
-    return std::nullopt;
-  }
-  void MarkBlitCommandBufferDirty() {
-    _blitCommandBufferDirty = true;
-  }
-  void DestroyBlitCommandBuffer() {
-    if (IsAlive(_blitCommandBufferCamera) && _blitCommandBuffer != nullptr) {
-      _blitCommandBufferCamera->RemoveCommandBuffer(
-          UnityEngine::Rendering::CameraEvent::AfterEverything, _blitCommandBuffer);
-    }
-    if (_blitCommandBuffer != nullptr) {
-      _blitCommandBuffer->Release();
-      _blitCommandBuffer = nullptr;
-    }
-    _blitCommandBufferCamera = nullptr;
-    _blitCommandBufferAttached = false;
-    _blitCommandBufferDirty = true;
-  }
-  // Build (or clear) the CommandBuffer that applies all active blit effects.
-  // Called from Update() after UpdateBlitEffects() so the effect list is fresh.
-  // The buffer is attached to the camera at CameraEvent::AfterEverything,
-  // which means it runs on the render thread once per eye without any
-  // MonoBehaviour overhead. Re-recording only happens when _blitCommandBufferDirty
-  // is set (effects added, expired, or cleared), not every frame.
-  void RebuildBlitCommandBuffer(UnityEngine::Camera* camera) {
-    bool const hasEffects = !_preEffects.empty() || !_postEffects.empty();
-    bool const wantBuffer = IsAlive(camera) && hasEffects &&
-                            !GetDisableAllBlits() && !_isResetting &&
-                            !_pauseMenuActive && _currentBeatmapData != nullptr;
-
-    // Camera changed — detach from old camera and force a rebuild.
-    if (_blitCommandBufferCamera != camera) {
-      if (IsAlive(_blitCommandBufferCamera) && _blitCommandBuffer != nullptr && _blitCommandBufferAttached) {
-        _blitCommandBufferCamera->RemoveCommandBuffer(
-            UnityEngine::Rendering::CameraEvent::AfterEverything, _blitCommandBuffer);
-        _blitCommandBufferAttached = false;
-      }
-      _blitCommandBufferCamera = camera;
-      _blitCommandBufferDirty = true;
-    }
-
-    if (!wantBuffer) {
-      // Detach if attached.
-      if (_blitCommandBufferAttached && IsAlive(_blitCommandBufferCamera) && _blitCommandBuffer != nullptr) {
-        _blitCommandBufferCamera->RemoveCommandBuffer(
-            UnityEngine::Rendering::CameraEvent::AfterEverything, _blitCommandBuffer);
-        _blitCommandBufferAttached = false;
-      }
+  void ApplyBlits(UnityEngine::RenderTexture* src, UnityEngine::RenderTexture* dest) {
+    if (!IsAlive(src) || (dest != nullptr && !IsAlive(dest))) return;
+    bool const passthroughOnly = GetDisableAllBlits() || _isResetting || _pauseMenuActive ||
+                                 _currentBeatmapData == nullptr ||
+                                 (_preEffects.empty() && _postEffects.empty());
+    if (passthroughOnly) {
+      if (GetDisableAllBlits() && GetVivifyDebugLogging())
+        PaperLogger.info("Vivify blit passthrough: Disable All Blits is enabled");
+      UnityEngine::Graphics::Blit(static_cast<UnityEngine::Texture*>(src), dest);
       return;
     }
-
-    if (!_blitCommandBufferDirty) return; // Nothing changed — reuse the existing buffer.
-
-    // Allocate the CommandBuffer once and reuse it across frames.
-    if (_blitCommandBuffer == nullptr) {
-      _blitCommandBuffer = UnityEngine::Rendering::CommandBuffer::New_ctor();
-      _blitCommandBuffer->set_name(u"VivifyBlits");
+    auto* main = EnsureCachedBlitTexture(_mainBlitTexture, src);
+    auto* scratch = EnsureCachedBlitTexture(_scratchBlitTexture, src);
+    if (!IsAlive(main) || !IsAlive(scratch)) {
+      UnityEngine::Graphics::Blit(static_cast<UnityEngine::Texture*>(src), dest);
+      return;
     }
-
-    // Detach before re-recording so Unity doesn't execute a half-rebuilt buffer.
-    if (_blitCommandBufferAttached) {
-      camera->RemoveCommandBuffer(
-          UnityEngine::Rendering::CameraEvent::AfterEverything, _blitCommandBuffer);
-      _blitCommandBufferAttached = false;
-    }
-    _blitCommandBuffer->Clear();
-
-    // Allocate ping-pong temporary RTs sized to the camera's current resolution.
-    // Unity pools these internally, so there's no per-frame heap allocation.
-    auto desc = UnityEngine::RenderTextureDescriptor(camera->get_pixelWidth(), camera->get_pixelHeight());
-    desc.set_msaaSamples(1);
-    desc.set_depthBufferBits(0);
-    _blitCommandBuffer->GetTemporaryRT(VivifyMainRTId(), desc);
-    _blitCommandBuffer->GetTemporaryRT(VivifyScratchRTId(), desc);
-
-    // Copy the camera output into main so effects can read from it.
-    _blitCommandBuffer->Blit(CameraTargetId(), MainId());
-
-    // mainIsActive == true  → main holds the latest result, scratch is free
-    // mainIsActive == false → scratch holds the latest result, main is free
-    bool mainIsActive = true;
-
-    auto encodeEffects = [&](std::vector<ActiveBlitEffect>& effects) {
-      for (auto& effect : effects) {
-        auto& data = effect.data;
-
-        // Validate material once per rebuild.
-        if (!CanUseBlitMaterial(data.material, data.pass)) {
-          if (data.material != nullptr && GetVivifyDebugLogging()) {
-            PaperLogger.warn("Vivify CB: invalid material pass={} source={}", data.pass, data.source);
-          }
-          data.targetsResolved = false;
-          continue;
+    UnityEngine::Graphics::Blit(static_cast<UnityEngine::Texture*>(src), main);
+    auto* mainCurrent = main;
+    auto* mainScratch = scratch;
+    auto renderEffects = [&](std::vector<ActiveBlitEffect> const& effects) {
+      for (auto const& effect : effects) {
+        auto const& data = effect.data;
+        if (!CanUseBlitMaterial(data.material, data.pass)) continue;
+        UnityEngine::RenderTexture* blitSrc = nullptr;
+        if (data.source == "_Main") {
+          blitSrc = mainCurrent;
+        } else if (auto it = _declaredTextures.find(data.source); it != _declaredTextures.end()) {
+          blitSrc = it->second.texture;
+        } else if (auto it = _secondaryCameras.find(data.source); it != _secondaryCameras.end()) {
+          blitSrc = it->second.colorRT;
         }
-
-        // Resolve source and target identifiers on first encode or after any
-        // change (MarkBlitCommandBufferDirty resets targetsResolved).
-        if (!data.targetsResolved) {
-          data.resolvedTargetIds.clear();
-          bool sourceIsMain = (data.source == "_Main");
-          if (!sourceIsMain) {
-            if (auto id = ResolveSourceId(data.source); id.has_value()) {
-              data.resolvedSource = *id;
-            } else {
-              if (GetVivifyDebugLogging()) {
-                PaperLogger.warn("Vivify CB: source '{}' not found, effect skipped", data.source);
-              }
-              continue;
-            }
-          }
-          for (auto const& tName : data.targets) {
-            if (tName == "_Main") {
-              // Sentinel: -1 means ping-pong main/scratch
-              data.resolvedTargetIds.push_back(UnityEngine::Rendering::RenderTargetIdentifier(-1));
-            } else if (auto it = _declaredTextures.find(tName);
-                       it != _declaredTextures.end() && IsAlive(it->second.texture)) {
-              data.resolvedTargetIds.push_back(UnityEngine::Rendering::RenderTargetIdentifier(
-                  reinterpret_cast<UnityEngine::RenderTexture*>(it->second.texture)));
-            } else {
-              if (GetVivifyDebugLogging()) {
-                PaperLogger.warn("Vivify CB: target '{}' not found, skipped", tName);
-              }
-            }
-          }
-          data.targetsResolved = true;
-        }
-
-        // Source: either ping-pong current buffer or a pre-resolved external RT.
-        auto const srcId = (data.source == "_Main")
-            ? (mainIsActive ? MainId() : ScratchId())
-            : data.resolvedSource;
-
-        for (int ti = 0; ti < static_cast<int>(data.resolvedTargetIds.size()); ti++) {
-          auto const& rawTarget = data.resolvedTargetIds[ti];
-          // Sentinel value -1 → ping-pong _Main target
-          bool const isPingPong = (rawTarget == UnityEngine::Rendering::RenderTargetIdentifier(-1));
-
-          if (isPingPong) {
-            auto const dstId = mainIsActive ? ScratchId() : MainId();
-            if (data.pass >= 0) {
-              _blitCommandBuffer->Blit(srcId, dstId, data.material, data.pass);
-            } else {
-              _blitCommandBuffer->Blit(srcId, dstId, data.material);
-            }
-            mainIsActive = !mainIsActive;
-          } else {
-            if (data.pass >= 0) {
-              _blitCommandBuffer->Blit(srcId, rawTarget, data.material, data.pass);
-            } else {
-              _blitCommandBuffer->Blit(srcId, rawTarget, data.material);
+        if (!IsAlive(blitSrc)) continue;
+        auto* sTex = static_cast<UnityEngine::Texture*>(blitSrc);
+        for (auto const& targetName : data.targets) {
+          if (targetName == "_Main") {
+            if (data.pass >= 0)
+              UnityEngine::Graphics::Blit(sTex, mainScratch, data.material, data.pass);
+            else
+              UnityEngine::Graphics::Blit(sTex, mainScratch, data.material);
+            std::swap(mainCurrent, mainScratch);
+          } else if (auto it = _declaredTextures.find(targetName); it != _declaredTextures.end()) {
+            if (IsAlive(it->second.texture)) {
+              if (data.pass >= 0)
+                UnityEngine::Graphics::Blit(sTex, it->second.texture, data.material, data.pass);
+              else
+                UnityEngine::Graphics::Blit(sTex, it->second.texture, data.material);
             }
           }
         }
       }
     };
-
-    encodeEffects(_preEffects);
-    encodeEffects(_postEffects);
-
-    // Write final result back to the camera target.
-    _blitCommandBuffer->Blit(mainIsActive ? MainId() : ScratchId(), CameraTargetId());
-
-    _blitCommandBuffer->ReleaseTemporaryRT(VivifyMainRTId());
-    _blitCommandBuffer->ReleaseTemporaryRT(VivifyScratchRTId());
-
-    camera->AddCommandBuffer(UnityEngine::Rendering::CameraEvent::AfterEverything, _blitCommandBuffer);
-    _blitCommandBufferAttached = true;
-    _blitCommandBufferDirty = false;
-
-    if (GetVivifyDebugLogging()) {
-      PaperLogger.info("Vivify CB rebuilt: pre={} post={}", _preEffects.size(), _postEffects.size());
+    renderEffects(_preEffects);
+    renderEffects(_postEffects);
+    UnityEngine::Graphics::Blit(static_cast<UnityEngine::Texture*>(mainCurrent), dest);
+  }
+  UnityEngine::RenderTexture* EnsureCachedBlitTexture(UnityEngine::RenderTexture*& texture,
+                                                      UnityEngine::RenderTexture* src) {
+    auto desc = src->get_descriptor();
+    desc.set_msaaSamples(1);
+    desc.set_depthBufferBits(0);
+    if (IsAlive(texture)) {
+      auto existing = texture->get_descriptor();
+      if (existing.get_width() == desc.get_width() &&
+          existing.get_height() == desc.get_height() &&
+          texture->IsCreated()) {
+        return texture;
+      }
+      ReleaseRenderTexture(texture);
     }
+    texture = UnityEngine::RenderTexture::New_ctor(desc);
+    if (!IsAlive(texture)) { texture = nullptr; return nullptr; }
+    if (!texture->Create()) { ReleaseRenderTexture(texture); return nullptr; }
+    return texture;
+  }
+  void ReleaseRenderTexture(UnityEngine::RenderTexture*& texture) {
+    if (IsAlive(texture)) {
+      texture->Release();
+      UnityEngine::Object::Destroy(texture);
+    }
+    texture = nullptr;
+  }
+  void ReleaseCachedBlitTextures() {
+    ReleaseRenderTexture(_mainBlitTexture);
+    ReleaseRenderTexture(_scratchBlitTexture);
+  }
+  void RefreshCameraApplier(UnityEngine::GameObject* mainCamGO, bool allowCameraApplier) {
+    if (_pauseMenuActive) allowCameraApplier = false;
+    if (!allowCameraApplier) {
+      if (_cameraApplier != nullptr && UnityEngine::Object::op_Implicit_bool(_cameraApplier) &&
+          _cameraApplier->get_enabled()) {
+        _cameraApplier->set_enabled(false);
+      }
+      return;
+    }
+    if (!IsAlive(mainCamGO)) { DestroyCameraApplier(); return; }
+    if (_cameraApplier == nullptr || !UnityEngine::Object::op_Implicit_bool(_cameraApplier) ||
+        _cameraApplier->get_gameObject().unsafePtr() != mainCamGO) {
+      DestroyCameraApplier();
+      _cameraApplier = mainCamGO->AddComponent<CameraApplier*>();
+      _cameraApplier->set_enabled(false);
+    }
+    bool const needsBlit = !GetDisableAllBlits() && (!_preEffects.empty() || !_postEffects.empty());
+    if (_cameraApplier->get_enabled() != needsBlit) _cameraApplier->set_enabled(needsBlit);
+  }
+  void DestroyCameraApplier() {
+    if (_cameraApplier != nullptr && UnityEngine::Object::op_Implicit_bool(_cameraApplier)) {
+      _cameraApplier->set_enabled(false);
+      UnityEngine::Object::Destroy(_cameraApplier);
+    }
+    _cameraApplier = nullptr;
   }
   void OnBehaviourDestroyed(RuntimeBehaviour* behaviour) {
-    if (_behaviour == behaviour) {
-      _behaviour = nullptr;
-    }
+    if (_behaviour == behaviour) _behaviour = nullptr;
   }
   void RefreshMultipassRendering() {
     auto mainCam = UnityEngine::Camera::get_main();
@@ -1241,7 +1150,8 @@ public:
       }
       _preEffects.clear();
       _postEffects.clear();
-      MarkBlitCommandBufferDirty();
+      ReleaseCachedBlitTextures();
+      DestroyCameraApplier();
     } else if (GetDisableBeat0FilmgrainBlit()) {
       UpdateBlitEffects();
     }
@@ -1276,11 +1186,8 @@ public:
     }
     _pauseMenuActive = active;
     if (active) {
-      // Detach the command buffer while paused so blit effects don't run over the pause menu.
-      if (_blitCommandBufferAttached && IsAlive(_blitCommandBufferCamera) && _blitCommandBuffer != nullptr) {
-        _blitCommandBufferCamera->RemoveCommandBuffer(
-            UnityEngine::Rendering::CameraEvent::AfterEverything, _blitCommandBuffer);
-        _blitCommandBufferAttached = false;
+      if (_cameraApplier != nullptr && UnityEngine::Object::op_Implicit_bool(_cameraApplier)) {
+        _cameraApplier->set_enabled(false);
       }
       if (_gameplayOverlayCamera != nullptr && UnityEngine::Object::op_Implicit_bool(_gameplayOverlayCamera)) {
         _gameplayOverlayCamera->set_enabled(false);
@@ -1326,14 +1233,7 @@ private:
         ApplyCameraProperties(mainCam.unsafePtr(), props->second);
       }
     }
-    // Command buffer blits are attached directly to the camera — no MonoBehaviour needed.
-    if (allowCameraApplier && !_pauseMenuActive) {
-      RebuildBlitCommandBuffer(mainCam.unsafePtr());
-    } else if (_blitCommandBufferAttached && IsAlive(_blitCommandBufferCamera)) {
-      _blitCommandBufferCamera->RemoveCommandBuffer(
-          UnityEngine::Rendering::CameraEvent::AfterEverything, _blitCommandBuffer);
-      _blitCommandBufferAttached = false;
-    }
+    RefreshCameraApplier(mainCamGO, allowCameraApplier);
   }
   void RefreshMultipassRendering(UnityEngine::GameObject* mainCamGO) {
     if (IsAlive(mainCamGO)) {
@@ -1417,9 +1317,6 @@ private:
     }
     _gameplayOverlayCamera = nullptr;
   }
-  // CameraApplier is kept declared (for DEFINE_TYPE / cordl) but is never
-  // added to the camera anymore. All blit work is done via RebuildBlitCommandBuffer
-  // which attaches a CommandBuffer directly at CameraEvent::AfterEverything.
   void HandleLevelSelected(SongCore::API::LevelSelect::LevelWasSelectedEventArgs const& event) {
     ResetRuntime();
     _selectedLevelPath.clear();
@@ -1656,7 +1553,7 @@ private:
   }
   void ResetRuntime() {
     _isResetting = true;
-    DestroyBlitCommandBuffer();
+    DestroyCameraApplier();
     DestroyGameplayOverlayCamera();
     RestoreGlobalProperties();
     RestoreAllVisualReplacements();
@@ -1701,6 +1598,7 @@ private:
     _secondaryCameras.clear();
     _preEffects.clear();
     _postEffects.clear();
+    ReleaseCachedBlitTextures();
     RestoreRenderSettings();
     _renderSettingAnimations.clear();
     _savedRenderSettings.clear();
@@ -3155,6 +3053,7 @@ private:
           .properties = std::move(animatedProperties),
           .startTime = startTime,
           .duration = duration,
+          .endTime = startTime + duration,
           .easing = easing,
       });
     }
@@ -3183,6 +3082,7 @@ private:
           .properties = std::move(animatedProperties),
           .startTime = startTime,
           .duration = duration,
+          .endTime = startTime + duration,
           .easing = easing,
       });
     }
@@ -3195,67 +3095,45 @@ private:
     return Easings::Interpolate(raw, easing);
   }
   void UpdateMaterialAnimations() {
-    if (_materialAnimations.empty()) {
-      return;
-    }
-    float songTime = CurrentSongTime();
+    if (_materialAnimations.empty()) return;
+    float const songTime = CurrentSongTime();
     auto write = _materialAnimations.begin();
     for (auto read = _materialAnimations.begin(); read != _materialAnimations.end(); ++read) {
-      if (read->material == nullptr) {
-        continue;
-      }
-      float progress = AnimationProgress(read->startTime, read->duration, read->easing, songTime);
-      for (auto const& property : read->properties) {
-        ApplyMaterialProperty(read->material, property, progress);
-      }
-      if (songTime < read->startTime + read->duration) {
-        if (write != read) {
-          *write = std::move(*read);
-        }
+      if (read->material == nullptr) continue;
+      float const progress = AnimationProgress(read->startTime, read->duration, read->easing, songTime);
+      for (auto const& property : read->properties) ApplyMaterialProperty(read->material, property, progress);
+      if (songTime < read->endTime) {
+        if (write != read) *write = std::move(*read);
         ++write;
       }
     }
     _materialAnimations.erase(write, _materialAnimations.end());
   }
   void UpdateGlobalAnimations() {
-    if (_globalAnimations.empty()) {
-      return;
-    }
-    float songTime = CurrentSongTime();
+    if (_globalAnimations.empty()) return;
+    float const songTime = CurrentSongTime();
     auto write = _globalAnimations.begin();
     for (auto read = _globalAnimations.begin(); read != _globalAnimations.end(); ++read) {
-      float progress = AnimationProgress(read->startTime, read->duration, read->easing, songTime);
-      for (auto const& property : read->properties) {
-        ApplyGlobalProperty(property, progress);
-      }
-      if (songTime < read->startTime + read->duration) {
-        if (write != read) {
-          *write = std::move(*read);
-        }
+      float const progress = AnimationProgress(read->startTime, read->duration, read->easing, songTime);
+      for (auto const& property : read->properties) ApplyGlobalProperty(property, progress);
+      if (songTime < read->endTime) {
+        if (write != read) *write = std::move(*read);
         ++write;
       }
     }
     _globalAnimations.erase(write, _globalAnimations.end());
   }
   void UpdateAnimatorAnimations() {
-    if (_animatorAnimations.empty()) {
-      return;
-    }
-    float songTime = CurrentSongTime();
+    if (_animatorAnimations.empty()) return;
+    float const songTime = CurrentSongTime();
     auto write = _animatorAnimations.begin();
     for (auto read = _animatorAnimations.begin(); read != _animatorAnimations.end(); ++read) {
       auto prefabIt = _livePrefabs.find(read->prefabId);
-      if (prefabIt == _livePrefabs.end()) {
-        continue;
-      }
-      float progress = AnimationProgress(read->startTime, read->duration, read->easing, songTime);
-      for (auto const& property : read->properties) {
-        ApplyAnimatorProperty(prefabIt->second.animators, property, progress);
-      }
-      if (songTime < read->startTime + read->duration) {
-        if (write != read) {
-          *write = std::move(*read);
-        }
+      if (prefabIt == _livePrefabs.end()) continue;
+      float const progress = AnimationProgress(read->startTime, read->duration, read->easing, songTime);
+      for (auto const& property : read->properties) ApplyAnimatorProperty(prefabIt->second.animators, property, progress);
+      if (songTime < read->endTime) {
+        if (write != read) *write = std::move(*read);
         ++write;
       }
     }
@@ -3317,15 +3195,12 @@ private:
   std::unordered_map<GlobalNamespace::NoteController*, VisualReplacement> _noteReplacements;
   std::unordered_map<GlobalNamespace::SaberModelController*, VisualReplacement> _saberReplacements;
   std::unordered_map<GlobalNamespace::NoteDebris*, VisualReplacement> _debrisReplacements;
-  CameraApplier* _cameraApplier = nullptr; // kept for DEFINE_TYPE, never added to camera
+  CameraApplier* _cameraApplier = nullptr;
   UnityEngine::Camera* _gameplayOverlayCamera = nullptr;
   int _gameplayOverlayLayerMask = 0;
   MultipassKeywordController* _multipassController = nullptr;
-  // Command buffer blit pipeline — replaces the old OnRenderImage / CameraApplier approach.
-  UnityEngine::Rendering::CommandBuffer* _blitCommandBuffer = nullptr;
-  UnityEngine::Camera* _blitCommandBufferCamera = nullptr;
-  bool _blitCommandBufferAttached = false;
-  bool _blitCommandBufferDirty = true;
+  UnityEngine::RenderTexture* _mainBlitTexture = nullptr;
+  UnityEngine::RenderTexture* _scratchBlitTexture = nullptr;
   std::vector<UnityEngine::Video::VideoPlayer*> _videoPlayers;
   std::unordered_map<std::string, std::string> _assetPaths;
   std::unordered_set<CustomJSONData::CustomEventData*> _catchUpAppliedCustomEvents;
@@ -3501,8 +3376,6 @@ void RuntimeBehaviour::OnDestroy() {
   Runtime::Instance().OnBehaviourDestroyed(this);
 }
 void CameraApplier::OnRenderImage(UnityEngine::RenderTexture* src, UnityEngine::RenderTexture* dest) {
-  if (IsAlive(src) && IsAlive(dest)) {
-    UnityEngine::Graphics::Blit(static_cast<UnityEngine::Texture*>(src), dest);
-  }
+  Runtime::Instance().ApplyBlits(src, dest);
 }
 }
