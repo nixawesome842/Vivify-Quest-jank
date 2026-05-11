@@ -20,7 +20,6 @@
 #include "GlobalNamespace/AudioTimeSyncController.hpp"
 #include "GlobalNamespace/AlwaysVisibleQuad.hpp"
 #include "GlobalNamespace/BeatmapCallbacksController.hpp"
-#include "GlobalNamespace/GameplayCoreSceneSetup.hpp"
 #include "GlobalNamespace/BpmController.hpp"
 #include "GlobalNamespace/StaticBeatmapObjectSpawnMovementData.hpp"
 #include "UnityEngine/Animator.hpp"
