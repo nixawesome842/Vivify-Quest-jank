@@ -56,11 +56,21 @@ jobs:
       - name: QPM restore
         run: qpm restore
 
-      # ── 7. Build .so ──────────────────────────────────────────────────────
+      # ── 7. Debug — check folders exist ────────────────────────────────────
+      - name: Check restore output
+        run: |
+          echo "=== extern/includes ===" 
+          ls extern/includes/ || echo "MISSING"
+          echo "=== extern/libs ===" 
+          ls extern/libs/ || echo "MISSING"
+          echo "=== include/ ===" 
+          ls include/ || echo "MISSING"
+
+      # ── 8. Build .so ──────────────────────────────────────────────────────
       - name: Build
         run: pwsh ./scripts/build.ps1
 
-      # ── 8. Package .qmod ──────────────────────────────────────────────────
+      # ── 9. Package .qmod ──────────────────────────────────────────────────
       - name: Create QMod
         run: pwsh ./scripts/createqmod.ps1
 
