@@ -5,7 +5,7 @@ on:
     branches: [ main, master ]
   pull_request:
     branches: [ main, master ]
-  workflow_dispatch:   # lets you trigger it manually from the Actions tab
+  workflow_dispatch:
 
 jobs:
   build:
@@ -16,44 +16,50 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # ── 2. PowerShell (needed by the build/createqmod scripts) ────────────
+      # ── 2. PowerShell ─────────────────────────────────────────────────────
       - name: Install PowerShell
         run: |
           sudo apt-get update -q
           sudo apt-get install -y powershell
 
-      # ── 3. Android NDK r27.3 ──────────────────────────────────────────────
-      - name: Install Android NDK r27.3
-        run: |
-          wget -q https://dl.google.com/android/repository/android-ndk-r27c-linux.zip -O ndk.zip
-          unzip -q ndk.zip -d $HOME
-          echo "ANDROID_NDK_HOME=$HOME/android-ndk-r27c" >> $GITHUB_ENV
-
-      # ── 4. CMake + Ninja ───────────────────────────────────────────────────
+      # ── 3. CMake + Ninja ──────────────────────────────────────────────────
       - name: Install CMake and Ninja
-        run: |
-          sudo apt-get install -y cmake ninja-build
+        run: sudo apt-get install -y cmake ninja-build
 
-      # ── 5. QPM ────────────────────────────────────────────────────────────
+      # ── 4. QPM — download latest linux binary dynamically ─────────────────
       - name: Install QPM
         run: |
-          wget -q https://github.com/QuestPackageManager/QPM.CLI/releases/latest/download/qpm-linux-x64 -O qpm
+          # Fetch the download URL for the latest linux release automatically
+          # so this never breaks when QPM renames their binary again
+          QPM_URL=$(curl -s https://api.github.com/repos/QuestPackageManager/QPM.CLI/releases/latest \
+            | grep browser_download_url \
+            | grep -i linux \
+            | grep -v musl \
+            | head -1 \
+            | cut -d '"' -f 4)
+          echo "Downloading QPM from: $QPM_URL"
+          wget -q "$QPM_URL" -O qpm
           chmod +x qpm
           sudo mv qpm /usr/local/bin/qpm
+          qpm --version
 
-      # ── 6. QPM restore (downloads all dependencies into extern/) ──────────
+      # ── 5. NDK — let QPM download and configure it automatically ──────────
+      - name: Setup NDK via QPM
+        run: qpm ndk resolve -d
+
+      # ── 6. QPM restore ────────────────────────────────────────────────────
       - name: QPM restore
         run: qpm restore
 
-      # ── 7. Build the .so ──────────────────────────────────────────────────
+      # ── 7. Build .so ──────────────────────────────────────────────────────
       - name: Build
         run: pwsh ./scripts/build.ps1
 
-      # ── 8. Package the .qmod ──────────────────────────────────────────────
+      # ── 8. Package .qmod ──────────────────────────────────────────────────
       - name: Create QMod
         run: pwsh ./scripts/createqmod.ps1
 
-      # ── 9. Upload as a downloadable artifact ──────────────────────────────
+      # ── 9. Upload artifact ────────────────────────────────────────────────
       - name: Upload QMod artifact
         uses: actions/upload-artifact@v4
         with:
