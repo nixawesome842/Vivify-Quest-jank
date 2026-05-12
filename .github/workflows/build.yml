@@ -54,21 +54,32 @@ jobs:
 
       # ── 6. QPM restore ────────────────────────────────────────────────────
       - name: QPM restore
-        run: qpm restore
+        run: |
+          qpm restore
+          qpm package fix  2>/dev/null || true
 
       # ── 7. Debug — check folders exist ────────────────────────────────────
       - name: Check restore output
         run: |
           echo "=== extern/includes ===" 
           ls extern/includes/ || echo "MISSING"
-          echo "=== extern/libs ===" 
-          ls extern/libs/ || echo "MISSING"
           echo "=== include/ ===" 
           ls include/ || echo "MISSING"
+          echo "=== CMake compile_commands ==="
+          cat build/compile_commands.json 2>/dev/null | python3 -c "
+import json,sys
+cmds = json.load(sys.stdin)
+for c in cmds:
+    if 'VivifyRuntime' in c.get('file',''):
+        print(c.get('command','')[:2000])
+        break
+" || echo "No compile_commands.json yet"
 
       # ── 8. Build .so ──────────────────────────────────────────────────────
       - name: Build
-        run: pwsh ./scripts/build.ps1
+        run: |
+          cmake -G "Ninja" -DCMAKE_BUILD_TYPE="RelWithDebInfo" -B build
+          cmake --build ./build -- -v 2>&1 | head -60
 
       # ── 9. Package .qmod ──────────────────────────────────────────────────
       - name: Create QMod
