@@ -933,8 +933,8 @@ public:
           replacement.originalMaterialBlockRenderers = mpb->____renderers;
           replacement.hasOriginalMaterialBlockRenderers = true;
         }
-        // Set empty renderer list so BS color writes have no effect.
-        mpb->____renderers = ArrayW<UnityW<UnityEngine::Renderer>>(0);
+        // Set null renderer list so BS color writes have no effect.
+        mpb->____renderers = ArrayW<UnityW<UnityEngine::Renderer>>(nullptr);
         mpb->ApplyChanges();
       }
       DisableOriginalRenderers(originalRenderers, replacement);
@@ -1765,7 +1765,7 @@ private:
     for (auto assetName : assetNames) {
       if (!assetName) continue;
       std::string originalAssetPath = il2cpp_utils::detail::to_string(assetName);
-      auto* asset = _mainBundle->LoadAsset(assetName);
+      auto asset = _mainBundle->LoadAsset(assetName);
       if (asset == nullptr) continue;
       std::string key = NormalizeAssetKey(originalAssetPath);
       if (!key.empty()) _assets[key] = asset;
