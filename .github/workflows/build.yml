@@ -1,0 +1,62 @@
+name: Build Vivify QMod
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:   # lets you trigger it manually from the Actions tab
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      # ── 1. Checkout ────────────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── 2. PowerShell (needed by the build/createqmod scripts) ────────────
+      - name: Install PowerShell
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y powershell
+
+      # ── 3. Android NDK r27.3 ──────────────────────────────────────────────
+      - name: Install Android NDK r27.3
+        run: |
+          wget -q https://dl.google.com/android/repository/android-ndk-r27c-linux.zip -O ndk.zip
+          unzip -q ndk.zip -d $HOME
+          echo "ANDROID_NDK_HOME=$HOME/android-ndk-r27c" >> $GITHUB_ENV
+
+      # ── 4. CMake + Ninja ───────────────────────────────────────────────────
+      - name: Install CMake and Ninja
+        run: |
+          sudo apt-get install -y cmake ninja-build
+
+      # ── 5. QPM ────────────────────────────────────────────────────────────
+      - name: Install QPM
+        run: |
+          wget -q https://github.com/QuestPackageManager/QPM.CLI/releases/latest/download/qpm-linux-x64 -O qpm
+          chmod +x qpm
+          sudo mv qpm /usr/local/bin/qpm
+
+      # ── 6. QPM restore (downloads all dependencies into extern/) ──────────
+      - name: QPM restore
+        run: qpm restore
+
+      # ── 7. Build the .so ──────────────────────────────────────────────────
+      - name: Build
+        run: pwsh ./scripts/build.ps1
+
+      # ── 8. Package the .qmod ──────────────────────────────────────────────
+      - name: Create QMod
+        run: pwsh ./scripts/createqmod.ps1
+
+      # ── 9. Upload as a downloadable artifact ──────────────────────────────
+      - name: Upload QMod artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Vivify
+          path: "*.qmod"
+          if-no-files-found: error
