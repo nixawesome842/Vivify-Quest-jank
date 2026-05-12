@@ -12,81 +12,52 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # ── 1. Checkout ────────────────────────────────────────────────────────
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # ── 2. PowerShell ─────────────────────────────────────────────────────
       - name: Install PowerShell
         run: |
           sudo apt-get update -q
           sudo apt-get install -y powershell
 
-      # ── 3. CMake + Ninja ──────────────────────────────────────────────────
       - name: Install CMake and Ninja
         run: sudo apt-get install -y cmake ninja-build
 
-      # ── 4. QPM — download latest linux binary dynamically ─────────────────
       - name: Install QPM
         run: |
-          QPM_URL=$(curl -s https://api.github.com/repos/QuestPackageManager/QPM.CLI/releases/latest \
-            | grep browser_download_url \
-            | grep -i linux \
-            | grep -v musl \
-            | head -1 \
-            | cut -d '"' -f 4)
-          echo "Downloading QPM from: $QPM_URL"
+          QPM_URL=$(curl -s https://api.github.com/repos/QuestPackageManager/QPM.CLI/releases/latest | grep browser_download_url | grep -i linux | grep -v musl | head -1 | cut -d '"' -f 4)
+          echo "Downloading QPM from $QPM_URL"
           wget -q "$QPM_URL" -O qpm_download
-          # Handle both zip and raw binary releases
           if file qpm_download | grep -q "Zip"; then
             unzip -q qpm_download -d qpm_dir
-            mv qpm_dir/qpm* qpm 2>/dev/null || mv qpm_dir/* qpm
+            cp qpm_dir/qpm* ./qpm 2>/dev/null || cp qpm_dir/* ./qpm
           else
-            mv qpm_download qpm
+            cp qpm_download ./qpm
           fi
-          chmod +x qpm
-          sudo mv qpm /usr/local/bin/qpm
+          chmod +x ./qpm
+          sudo cp ./qpm /usr/local/bin/qpm
           qpm --version
 
-      # ── 5. NDK — let QPM download and configure it automatically ──────────
-      - name: Setup NDK via QPM
+      - name: Setup NDK
         run: qpm ndk resolve -d
 
-      # ── 6. QPM restore ────────────────────────────────────────────────────
       - name: QPM restore
-        run: |
-          qpm restore
-          qpm package fix  2>/dev/null || true
+        run: qpm restore
 
-      # ── 7. Debug — check folders exist ────────────────────────────────────
-      - name: Check restore output
+      - name: Debug includes
         run: |
-          echo "=== extern/includes ===" 
-          ls extern/includes/ || echo "MISSING"
-          echo "=== include/ ===" 
-          ls include/ || echo "MISSING"
-          echo "=== CMake compile_commands ==="
-          cat build/compile_commands.json 2>/dev/null | python3 -c "
-import json,sys
-cmds = json.load(sys.stdin)
-for c in cmds:
-    if 'VivifyRuntime' in c.get('file',''):
-        print(c.get('command','')[:2000])
-        break
-" || echo "No compile_commands.json yet"
+          echo "extern/includes:" && ls extern/includes/
+          echo "include/:" && ls include/
 
-      # ── 8. Build .so ──────────────────────────────────────────────────────
       - name: Build
         run: |
-          cmake -G "Ninja" -DCMAKE_BUILD_TYPE="RelWithDebInfo" -B build
-          cmake --build ./build -- -v 2>&1 | head -60
+          cmake -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -B build
+          cmake --build ./build --verbose 2>&1 | tail -80
 
-      # ── 9. Package .qmod ──────────────────────────────────────────────────
       - name: Create QMod
         run: pwsh ./scripts/createqmod.ps1
 
-      # ── 9. Upload artifact ────────────────────────────────────────────────
-      - name: Upload QMod artifact
+      - name: Upload QMod
         uses: actions/upload-artifact@v4
         with:
           name: Vivify
