@@ -1,0 +1,73 @@
+name: Build Vivify QMod
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      # ── 1. Checkout ────────────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── 2. PowerShell ─────────────────────────────────────────────────────
+      - name: Install PowerShell
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y powershell
+
+      # ── 3. CMake + Ninja ──────────────────────────────────────────────────
+      - name: Install CMake and Ninja
+        run: sudo apt-get install -y cmake ninja-build
+
+      # ── 4. QPM — download latest linux binary dynamically ─────────────────
+      - name: Install QPM
+        run: |
+          QPM_URL=$(curl -s https://api.github.com/repos/QuestPackageManager/QPM.CLI/releases/latest \
+            | grep browser_download_url \
+            | grep -i linux \
+            | grep -v musl \
+            | head -1 \
+            | cut -d '"' -f 4)
+          echo "Downloading QPM from: $QPM_URL"
+          wget -q "$QPM_URL" -O qpm_download
+          # Handle both zip and raw binary releases
+          if file qpm_download | grep -q "Zip"; then
+            unzip -q qpm_download -d qpm_dir
+            mv qpm_dir/qpm* qpm 2>/dev/null || mv qpm_dir/* qpm
+          else
+            mv qpm_download qpm
+          fi
+          chmod +x qpm
+          sudo mv qpm /usr/local/bin/qpm
+          qpm --version
+
+      # ── 5. NDK — let QPM download and configure it automatically ──────────
+      - name: Setup NDK via QPM
+        run: qpm ndk resolve -d
+
+      # ── 6. QPM restore ────────────────────────────────────────────────────
+      - name: QPM restore
+        run: qpm restore
+
+      # ── 7. Build .so ──────────────────────────────────────────────────────
+      - name: Build
+        run: pwsh ./scripts/build.ps1
+
+      # ── 8. Package .qmod ──────────────────────────────────────────────────
+      - name: Create QMod
+        run: pwsh ./scripts/createqmod.ps1
+
+      # ── 9. Upload artifact ────────────────────────────────────────────────
+      - name: Upload QMod artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Vivify
+          path: "*.qmod"
+          if-no-files-found: error
