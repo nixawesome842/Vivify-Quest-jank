@@ -1,4 +1,4 @@
-name: Build Vivify QMod
+lname: Build Vivify QMod
 
 on:
   push:
