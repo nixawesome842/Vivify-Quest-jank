@@ -52,7 +52,9 @@ jobs:
       - name: Build
         run: |
           cmake -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -B build
-          cmake --build ./build --verbose 2>&1 | tail -80
+          cmake --build ./build
+          ls build/*.so
+          cp build/libvivify.so build/libVivify.so 2>/dev/null || true
 
       - name: Create QMod
         run: pwsh ./scripts/createqmod.ps1
