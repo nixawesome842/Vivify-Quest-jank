@@ -1,4 +1,4 @@
-lname: Build Vivify QMod
+name: Build Vivify QMod
 
 on:
   push:
@@ -41,8 +41,24 @@ jobs:
       - name: QPM restore
         run: qpm restore
 
-      - name: Fix file encoding
-        run: find src include -type f | xargs sed -i s/$'\xef\xbb\xbf'//
+      - name: Check and fix source files
+        run: |
+          python3 - << 'PYEOF'
+          import os, sys
+          exts = ('.cpp', '.hpp', '.inl', '.h', '.c')
+          for root, dirs, files in os.walk('.'):
+            dirs[:] = [d for d in dirs if d not in ('build', 'extern', '.git')]
+            for f in files:
+              if not f.endswith(exts):
+                continue
+              path = os.path.join(root, f)
+              raw = open(path, 'rb').read()
+              if raw[:3] == b'\xef\xbb\xbf':
+                print('Stripping BOM from', path)
+                open(path, 'wb').write(raw[3:])
+              xxd = raw[:16].hex()
+              print(path, xxd)
+          PYEOF
 
       - name: Build
         run: |
