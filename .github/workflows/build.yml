@@ -16,9 +16,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install PowerShell
-        run: |
-          sudo apt-get update -q
-          sudo apt-get install -y powershell
+        run: sudo apt-get update -q && sudo apt-get install -y powershell
 
       - name: Install CMake and Ninja
         run: sudo apt-get install -y cmake ninja-build
@@ -26,9 +24,8 @@ jobs:
       - name: Install QPM
         run: |
           QPM_URL=$(curl -s https://api.github.com/repos/QuestPackageManager/QPM.CLI/releases/latest | grep browser_download_url | grep -i linux | grep -v musl | head -1 | cut -d '"' -f 4)
-          echo "Downloading QPM from $QPM_URL"
-          wget -q "$QPM_URL" -O qpm_download
-          if file qpm_download | grep -q "Zip"; then
+          wget -q $QPM_URL -O qpm_download
+          if file qpm_download | grep -q Zip; then
             unzip -q qpm_download -d qpm_dir
             cp qpm_dir/qpm* ./qpm 2>/dev/null || cp qpm_dir/* ./qpm
           else
@@ -44,16 +41,13 @@ jobs:
       - name: QPM restore
         run: qpm restore
 
-      - name: Debug includes
-        run: |
-          echo "extern/includes:" && ls extern/includes/
-          echo "include/:" && ls include/
+      - name: Fix file encoding
+        run: find src include -type f | xargs sed -i s/$'\xef\xbb\xbf'//
 
       - name: Build
         run: |
           cmake -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -B build
           cmake --build ./build
-          ls build/*.so
           cp build/libvivify.so build/libVivify.so 2>/dev/null || true
 
       - name: Create QMod
@@ -63,5 +57,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: Vivify
-          path: "*.qmod"
+          path: '*.qmod'
           if-no-files-found: error
